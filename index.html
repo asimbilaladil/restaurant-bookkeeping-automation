@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Revel Operations Report Fetcher</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #1a1a2e;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      color: #6b7280;
+      font-size: 0.9rem;
+      margin-bottom: 28px;
+    }
+
+    /* ─── Controls card ─── */
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 24px;
+    }
+
+    .controls {
+      display: flex;
+      align-items: flex-end;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #374151;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    input[type="date"] {
+      padding: 10px 14px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      color: #1a1a2e;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="date"]:focus { border-color: #4f46e5; }
+
+    .btn {
+      padding: 10px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn-primary {
+      background: #4f46e5;
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) { background: #4338ca; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+    }
+    .btn-secondary:hover:not(:disabled) { background: #e5e7eb; }
+
+    /* ─── Progress grid ─── */
+    .section-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 14px;
+    }
+
+    .est-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+    }
+
+    .est-card {
+      border-radius: 10px;
+      padding: 14px 16px;
+      border: 1.5px solid #e5e7eb;
+      background: #fafafa;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .est-card.pending  { border-color: #e5e7eb; background: #fafafa; }
+    .est-card.running  { border-color: #fbbf24; background: #fffbeb; }
+    .est-card.success  { border-color: #10b981; background: #ecfdf5; }
+    .est-card.error    { border-color: #ef4444; background: #fef2f2; }
+
+    .est-id {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .est-status {
+      font-size: 0.78rem;
+      color: #6b7280;
+      margin-bottom: 6px;
+    }
+    .est-card.running .est-status  { color: #d97706; }
+    .est-card.success .est-status  { color: #059669; }
+    .est-card.error   .est-status  { color: #dc2626; }
+
+    .est-summary {
+      font-size: 0.78rem;
+      color: #374151;
+      line-height: 1.5;
+    }
+
+    /* ─── Summary bar ─── */
+    .summary-bar {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+    .stat {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #4f46e5;
+    }
+    .stat-label {
+      font-size: 0.75rem;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* ─── Results table ─── */
+    .table-wrap {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      background: #f9fafb;
+      border-bottom: 2px solid #e5e7eb;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #f3f4f6;
+      color: #374151;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-success { background: #d1fae5; color: #065f46; }
+    .badge-error   { background: #fee2e2; color: #991b1b; }
+
+    /* ─── Log ─── */
+    #log {
+      background: #1e1e2e;
+      color: #a6e3a1;
+      border-radius: 10px;
+      padding: 16px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .hidden { display: none; }
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #fbbf24;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 4px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Revel → R365 Tools</h1>
+  <p class="subtitle">Fetch Revel reports, then open R365 Daily Sales Summary for the same date</p>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="controls">
+      <div class="field">
+        <label for="startDate">Start Date</label>
+        <input type="date" id="startDate" />
+      </div>
+      <button class="btn btn-primary" id="fetchBtn" onclick="startFetch()">Fetch Reports</button>
+      <button class="btn btn-secondary" id="exportBtn" onclick="exportJSON()" disabled>Export JSON</button>
+      <button class="btn btn-secondary hidden" id="r365Btn" onclick="openR365()">Open in R365</button>
+    </div>
+    <div id="r365Status" style="margin-top:12px;font-size:0.88rem;"></div>
+  </div>
+
+  <!-- Summary stats -->
+  <div class="card hidden" id="summaryCard">
+    <div class="section-title">Summary</div>
+    <div class="summary-bar">
+      <div class="stat">
+        <span class="stat-value" id="statDone">0 / 11</span>
+        <span class="stat-label">Completed</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="statSuccess">0</span>
+        <span class="stat-label">Succeeded</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="statError">0</span>
+        <span class="stat-label">Errors</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Progress grid -->
+  <div class="card hidden" id="progressCard">
+    <div class="section-title">Establishments</div>
+    <div class="est-grid" id="estGrid"></div>
+  </div>
+
+  <!-- Results table -->
+  <div class="card hidden" id="resultsCard">
+    <div class="section-title">Results</div>
+    <div class="table-wrap">
+      <table id="resultsTable">
+        <thead>
+          <tr>
+            <th>Establishment ID</th>
+            <th>Date Range</th>
+            <th>Status</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="card hidden" id="logCard">
+    <div class="section-title">Log</div>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+  const ESTABLISHMENTS = [32, 14, 48, 7, 6, 25, 36, 26, 20, 40, 15];
+  const EST_NAMES = {
+    32: "LCF Airtex", 14: "LCF Beaumont", 48: "LCF Downtown Houston",
+    7: "LCF Ella", 6: "LCF Katy", 25: "LCF Mission Bend",
+    36: "LCF Missouri City", 26: "LCF Nederland", 20: "LCF Pasadena",
+    40: "LCF Rosenberg", 15: "LCF Shepherd",
+  };
+  let allResults = [];
+  let estState = {};
+
+  // ─── Init ─────────────────────────────────────────────────────────────────
+  window.onload = () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    document.getElementById("startDate").value = yesterday.toISOString().slice(0, 10);
+  };
+
+  // ─── R365 Navigator ───────────────────────────────────────────────────────
+  async function openR365(estId) {
+    const dateVal = document.getElementById("startDate").value;
+    const locationName = EST_NAMES[estId] || null;
+    const status = document.getElementById("r365Status");
+
+    // Disable all r365 buttons while navigating
+    document.querySelectorAll(".r365-est-btn").forEach(b => b.disabled = true);
+    document.getElementById("r365Btn").disabled = true;
+
+    const label = locationName ? `${locationName} (Est. ${estId})` : (estId ? `Est. ${estId}` : "first entity");
+    status.textContent = `Opening R365 for ${label} on ${dateVal}… (30–60s)`;
+    status.style.color = "#d97706";
+
+    try {
+      const body = { date: dateVal };
+      if (locationName) body.location_name = locationName;
+
+      // Pass full revel_data so server can extract all JE field values
+      if (estId) {
+        const result = allResults.find(r => r.establishment_id === estId);
+        body.revel_data = result?.data || {};
+      }
+
+      const resp = await fetch("/api/r365/navigate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (data.error) {
+        status.textContent = "Error: " + data.error;
+        status.style.color = "#dc2626";
+      } else {
+        status.textContent = `R365 opened — ${label} on ${dateVal}`;
+        status.style.color = "#059669";
+      }
+    } catch (e) {
+      status.textContent = "Request failed: " + e.message;
+      status.style.color = "#dc2626";
+    } finally {
+      document.querySelectorAll(".r365-est-btn").forEach(b => b.disabled = false);
+      document.getElementById("r365Btn").disabled = false;
+    }
+  }
+
+  // ─── Start fetch ──────────────────────────────────────────────────────────
+  function startFetch() {
+    const startDate = document.getElementById("startDate").value;
+    if (!startDate) { alert("Please pick a start date."); return; }
+
+    allResults = [];
+    estState = {};
+    resetUI();
+    showAll();
+    buildEstGrid();
+    addLog(`Starting fetch for ${startDate}...`);
+
+    document.getElementById("fetchBtn").disabled = true;
+    document.getElementById("exportBtn").disabled = true;
+    document.getElementById("r365Btn").classList.add("hidden");
+    document.getElementById("r365Status").textContent = "";
+    document.querySelectorAll(".r365-est-btn").forEach(b => b.classList.add("hidden"));
+
+    const evtSource = new EventSource(
+      `/api/fetch?_t=${Date.now()}`,   // cache-bust
+    );
+
+    // POST via fetch + SSE trick: close the EventSource approach,
+    // instead we use fetch + ReadableStream for SSE over POST
+    evtSource.close();
+    fetchSSE(startDate);
+  }
+
+  async function fetchSSE(startDate) {
+    const resp = await fetch("/api/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start_date: startDate, establishments: ESTABLISHMENTS }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      addLog(`ERROR: ${err}`);
+      document.getElementById("fetchBtn").disabled = false;
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete SSE messages
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop(); // keep incomplete trailing chunk
+
+      for (const msg of messages) {
+        if (!msg.trim()) continue;
+        const lines = msg.split("\n");
+        let eventType = "message", dataStr = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          if (line.startsWith("data: "))  dataStr = line.slice(6).trim();
+        }
+        if (!dataStr) continue;
+
+        try {
+          const payload = JSON.parse(dataStr);
+          handleEvent(eventType, payload);
+        } catch(e) {
+          addLog(`Parse error: ${e.message}`);
+        }
+      }
+    }
+
+    document.getElementById("fetchBtn").disabled = false;
+  }
+
+  // ─── Event handler ────────────────────────────────────────────────────────
+  function handleEvent(type, payload) {
+    if (type === "progress") {
+      const { establishment_id, status, error, summary, range_from, range_to } = payload;
+      estState[establishment_id] = { status, error, summary, range_from, range_to };
+      updateEstCard(establishment_id, status, error, summary);
+      updateSummaryStats();
+      addLog(`est=${establishment_id} → ${status}${error ? ": " + error : ""}`);
+    }
+
+    if (type === "done") {
+      allResults = payload.results || [];
+      populateResultsTable(allResults);
+      document.getElementById("resultsCard").classList.remove("hidden");
+      document.getElementById("exportBtn").disabled = false;
+      document.getElementById("r365Btn").classList.remove("hidden");
+      document.getElementById("r365Status").textContent = "";
+      // Show per-establishment R365 buttons
+      document.querySelectorAll(".r365-est-btn").forEach(b => b.classList.remove("hidden"));
+      addLog(`Done. ${allResults.length} establishments processed.`);
+    }
+
+    if (type === "error") {
+      addLog(`FETCH ERROR: ${payload.message}`);
+      document.getElementById("fetchBtn").disabled = false;
+    }
+  }
+
+  // ─── UI helpers ──────────────────────────────────────────────────────────
+  function buildEstGrid() {
+    const grid = document.getElementById("estGrid");
+    grid.innerHTML = "";
+    for (const id of ESTABLISHMENTS) {
+      const name = EST_NAMES[id] || "";
+      const card = document.createElement("div");
+      card.className = "est-card pending";
+      card.id = `est-${id}`;
+      card.innerHTML = `
+        <div class="est-id">Est. ${id}</div>
+        ${name ? `<div style="font-size:0.75rem;color:#6b7280;margin-bottom:2px;">${name}</div>` : ""}
+        <div class="est-status">Pending</div>
+        <div class="est-summary"></div>
+        <button class="r365-est-btn hidden" onclick="openR365(${id})"
+          style="margin-top:8px;font-size:0.72rem;padding:4px 10px;border:1px solid #6366f1;
+                 background:#eef2ff;color:#4f46e5;border-radius:6px;cursor:pointer;">
+          Open in R365
+        </button>
+      `;
+      grid.appendChild(card);
+    }
+  }
+
+  function updateEstCard(id, status, error, summary) {
+    const card = document.getElementById(`est-${id}`);
+    if (!card) return;
+    card.className = `est-card ${status}`;
+
+    const statusEl = card.querySelector(".est-status");
+    const summaryEl = card.querySelector(".est-summary");
+
+    if (status === "running") {
+      statusEl.innerHTML = `<span class="spinner"></span>Fetching…`;
+    } else if (status === "success") {
+      statusEl.textContent = "✓ Done";
+    } else {
+      statusEl.textContent = `✗ Error`;
+    }
+
+    if (summary && !error) {
+      const lines = [];
+      if (summary.total_sales   != null) lines.push(`Sales: ${fmt(summary.total_sales)}`);
+      if (summary.order_count   != null) lines.push(`Orders: ${summary.order_count}`);
+      if (summary.total_tax     != null) lines.push(`Tax: ${fmt(summary.total_tax)}`);
+      if (summary.total_discount!= null) lines.push(`Disc: ${fmt(summary.total_discount)}`);
+      summaryEl.textContent = lines.join(" · ");
+    } else if (error) {
+      summaryEl.textContent = error.slice(0, 60);
+    }
+  }
+
+  function updateSummaryStats() {
+    const done    = Object.keys(estState).length;
+    const success = Object.values(estState).filter(s => s.status === "success").length;
+    const errors  = Object.values(estState).filter(s => s.status === "error").length;
+    document.getElementById("statDone").textContent    = `${done} / ${ESTABLISHMENTS.length}`;
+    document.getElementById("statSuccess").textContent = success;
+    document.getElementById("statError").textContent   = errors;
+  }
+
+  function populateResultsTable(results) {
+    const tbody = document.getElementById("resultsBody");
+    tbody.innerHTML = "";
+    for (const r of results) {
+      const tr = document.createElement("tr");
+      const isError = !!r.error;
+      const badge = isError
+        ? `<span class="badge badge-error">Error</span>`
+        : `<span class="badge badge-success">Success</span>`;
+
+      let details = "";
+      if (isError) {
+        details = r.error;
+      } else if (r.data) {
+        const d = r.data;
+        const parts = [];
+        if (d.total_sales   != null) parts.push(`Sales: ${fmt(d.total_sales)}`);
+        if (d.order_count   != null) parts.push(`Orders: ${d.order_count}`);
+        if (d.net_sales     != null) parts.push(`Net: ${fmt(d.net_sales)}`);
+        details = parts.join("  |  ") || "Data received (no summary keys)";
+      }
+
+      tr.innerHTML = `
+        <td><strong>${r.establishment_id}</strong></td>
+        <td style="font-size:0.8rem;color:#6b7280">${r.range_from || "—"} → ${r.range_to || "—"}</td>
+        <td>${badge}</td>
+        <td>${details}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function showAll() {
+    ["summaryCard", "progressCard", "logCard"].forEach(id =>
+      document.getElementById(id).classList.remove("hidden")
+    );
+  }
+
+  function resetUI() {
+    document.getElementById("resultsCard").classList.add("hidden");
+    document.getElementById("resultsBody").innerHTML = "";
+    document.getElementById("log").textContent = "";
+    updateSummaryStats();
+  }
+
+  function addLog(msg) {
+    const el = document.getElementById("log");
+    const ts = new Date().toLocaleTimeString();
+    el.textContent += `[${ts}] ${msg}\n`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function fmt(val) {
+    if (val == null) return "—";
+    return "£" + Number(val).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function exportJSON() {
+    if (!allResults.length) return;
+    const blob = new Blob([JSON.stringify(allResults, null, 2)], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    const date = document.getElementById("startDate").value;
+    a.href     = url;
+    a.download = `revel_operations_${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+</script>
+</body>
+</html>

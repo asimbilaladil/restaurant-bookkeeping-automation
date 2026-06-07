@@ -1,0 +1,334 @@
+"""
+server.py
+=========
+Flask API server that exposes the Revel fetcher over HTTP.
+
+Endpoints:
+    POST /api/fetch
+        Body: { "start_date": "2026-05-30" }
+        Streams SSE progress events, then final JSON results.
+
+    GET  /api/establishments
+        Returns the list of establishment IDs.
+
+    GET  /
+        Serves the frontend HTML.
+
+Run:
+    python server.py
+    # then open http://localhost:5050
+"""
+
+import json
+import logging
+import queue
+import threading
+from datetime import date
+from pathlib import Path
+
+from flask import Flask, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
+from dotenv import load_dotenv
+
+from revel_fetcher import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
+from r365_fetcher import open_r365_journal_entry
+
+load_dotenv()
+
+# ─── App setup ───────────────────────────────────────────────────────────────
+app = Flask(__name__, static_folder=".")
+CORS(app)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+# ─── Routes ──────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return send_from_directory(".", "index.html")
+
+
+@app.route("/api/establishments")
+def establishments():
+    return jsonify({
+        "establishments": DEFAULT_ESTABLISHMENTS,
+        "names": ESTABLISHMENT_NAMES,
+    })
+
+
+@app.route("/api/fetch", methods=["POST"])
+def fetch():
+    """
+    Accepts { "start_date": "YYYY-MM-DD", "establishments": [32, 14, ...] }
+    Returns Server-Sent Events stream:
+      - progress events as each establishment completes
+      - a final 'done' event with full results array
+    """
+    body = request.get_json(force=True)
+
+    if not body or "start_date" not in body:
+        return jsonify({"error": "start_date is required"}), 400
+
+    try:
+        start_date = date.fromisoformat(body["start_date"])
+    except ValueError:
+        return jsonify({"error": "start_date must be YYYY-MM-DD"}), 400
+
+    # Also include name in each result for the frontend
+    raw_ests = body.get("establishments", DEFAULT_ESTABLISHMENTS)
+    try:
+        establishments_list = [int(e) for e in raw_ests]
+    except (TypeError, ValueError):
+        return jsonify({"error": "establishments must be a list of integers"}), 400
+
+    # Use a queue to pass progress events from the fetcher thread to SSE stream
+    event_queue: queue.Queue = queue.Queue()
+
+    def progress_callback(est_id, status, result):
+        event_queue.put({
+            "type": "progress",
+            "establishment_id": est_id,
+            "status": status,
+            "range_from": result.get("range_from"),
+            "range_to": result.get("range_to"),
+            "error": result.get("error"),
+            # Send a lightweight summary — full data comes in 'done' event
+            "summary": _summarise(result.get("data")),
+        })
+
+    def run_fetch():
+        try:
+            results = fetch_reports(start_date, establishments_list, progress_callback)
+            event_queue.put({"type": "done", "results": results})
+        except Exception as exc:
+            log.error("fetch_reports error: %s", exc)
+            event_queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=run_fetch, daemon=True)
+    thread.start()
+
+    def stream():
+        while True:
+            try:
+                event = event_queue.get(timeout=120)  # 2-min timeout per event
+            except queue.Empty:
+                yield "event: error\ndata: {\"message\": \"timeout\"}\n\n"
+                break
+
+            event_type = event.get("type", "message")
+            data = json.dumps(event, default=str)
+            yield f"event: {event_type}\ndata: {data}\n\n"
+
+            if event_type in ("done", "error"):
+                break
+
+    return Response(
+        stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/r365/navigate", methods=["POST"])
+def r365_navigate():
+    """
+    Body: { "date": "2026-05-22", "location_name": "LCF Airtex", "revel_data": {...} }
+    Opens a headed R365 browser, logs in, navigates to DSS, and fills the Journal Entry.
+    revel_data is the raw Revel operations report JSON for a single establishment.
+    """
+    body = request.get_json(force=True) or {}
+    target_date = None
+    if "date" in body:
+        try:
+            target_date = date.fromisoformat(body["date"])
+        except ValueError:
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    location_name = body.get("location_name")
+    revel_data = body.get("revel_data") or {}
+    revel_values = _extract_revel_values(revel_data)
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(open_r365_journal_entry, target_date, location_name, revel_values)
+        result = future.result(timeout=300)
+
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _extract_revel_values(data: dict) -> dict:
+    """
+    Extract all Journal Entry field values from a Revel operations report JSON.
+
+    Returns a dict with keys matching fill_journal_entry() expectations.
+    """
+    if not data:
+        return {}
+
+    sd = data.get("sales_data") or {}
+    product_mix = data.get("product_mix_data") or []
+    tax_data = data.get("tax_data") or []
+
+    def f(v):
+        """Safe float conversion."""
+        try:
+            return round(float(v or 0), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # ── Sales by Class (Gross Sales column = price) ───────────────────────────
+    class_map = {
+        row["product_class"]: row
+        for row in product_mix
+        if row.get("row_type") == "Class"
+    }
+    food_sales      = f(class_map.get("1. Food", {}).get("price", 0))
+    beverage_sales  = f(class_map.get("2. Beverage", {}).get("price", 0))
+    delivery_sales  = f(class_map.get("5. Delivery - Food", {}).get("price", 0))
+
+    # ── Tax ───────────────────────────────────────────────────────────────────
+    tax_total = 0.0
+    for row in tax_data:
+        if row.get("row_type") == "totals_row":
+            tax_total = f(row.get("tax", 0))
+            break
+
+    # ── Credit Cards AR = credit sales + credit tips - credit refunds ─────────
+    credit_sales   = f(sd.get("credit_total", 0))
+    credit_tips    = f(sd.get("credit_tips_total", 0))
+    credit_refunds = f(sd.get("credit_refunds", 0))
+    credit_cards_ar = round(credit_sales + credit_tips - credit_refunds, 2)
+
+    # ── Marketplace payments (custom_payments dict) ───────────────────────────
+    custom = sd.get("custom_payments") or {}
+    uber_eats = 0.0
+    doordash  = 0.0
+    grubhub   = 0.0
+    for payment in custom.values():
+        name = (payment.get("name") or "").strip().lower()
+        total = f(payment.get("total", 0))
+        if "uber eats" in name or name == "uber eats":
+            uber_eats += total
+        elif "door dash" in name or "doordash" in name or "dd marketplace" in name:
+            doordash += total
+        elif "grub hub" in name or "grubhub" in name:
+            grubhub += total
+    uber_eats = round(uber_eats, 2)
+    doordash  = round(doordash, 2)
+    grubhub   = round(grubhub, 2)
+
+    # ── Cash / Undeposited Funds ──────────────────────────────────────────────
+    undeposited_funds = f(sd.get("cash_for_sales", 0))
+
+    # ── Discounts ─────────────────────────────────────────────────────────────
+    # TODO: Confirm which Revel discount reasons map to each R365 account.
+    # Revel discounts_data reasons seen: "Employee $9.79 Off", "Manager 100%",
+    # "Military Discount", "Police/Fire in Uniform", "Senior Discount",
+    # "Remake <name>", "3 Finger Meal - 1", "5 Finger Meal - 1", "Free 3 Finger Meal - 1"
+    # Totals rows: "Standard" (is_total), "Loyalty" (is_total)
+    #
+    # Suspected mapping (UNCONFIRMED — update when team confirms):
+    #   4500-02 Comps          ← "Manager 100%"
+    #   5000-17 Employee Disc  ← "Employee $9.79 Off"
+    #   4500-01 Discounts      ← "Military Discount", "Police/Fire in Uniform", "Senior Discount"
+    #   4500-03 Promotions     ← "Free 3 Finger Meal - 1", "3 Finger Meal - 1", "5 Finger Meal - 1"
+    #   " - " (manual row)     ← "Remake <name>" entries — entered manually, skip automation
+    discounts_data = data.get("discounts_data") or []
+
+    COMPS_REASONS      = {"manager 100%"}
+    EMP_DISC_REASONS   = {"employee $9.79 off"}
+    PROMOTIONS_REASONS = {"free 3 finger meal - 1", "3 finger meal - 1", "5 finger meal - 1"}
+    # Everything else non-total, non-remake goes to Discounts
+    SKIP_REASONS       = {"remake"}  # partial match — manual entries
+
+    comps = employee_discount = promotions = item_discounts = 0.0
+    for row in discounts_data:
+        if row.get("is_total"):
+            continue
+        reason = (row.get("reason") or "").strip().lower().split("\n")[0]
+        amount = f(row.get("amount", 0))
+        if any(s in reason for s in SKIP_REASONS):
+            continue  # manual entry, skip
+        elif reason in COMPS_REASONS:
+            comps += amount
+        elif reason in EMP_DISC_REASONS:
+            employee_discount += amount
+        elif reason in PROMOTIONS_REASONS:
+            promotions += amount
+        else:
+            item_discounts += amount
+
+    comps             = round(comps, 2)
+    employee_discount = round(employee_discount, 2)
+    promotions        = round(promotions, 2)
+    item_discounts    = round(item_discounts, 2)
+
+    # ── Employee Tips ─────────────────────────────────────────────────────────
+    # The editable 2301 row = adj_total (tip adjustment debit, e.g. 0.74)
+    # The read-only 2301 row = tips_total (auto-filled by R365, e.g. 24.75) — skip
+    employee_tips = f(sd.get("adj_total", 0))
+
+    # ── Cash Over/Short variance ──────────────────────────────────────────────
+    # net_account_for = what Revel says should have been collected
+    # total_payments  = what was actually collected
+    net_account_for = f(sd.get("net_account_for", 0))
+    total_payments  = f(sd.get("total_payments", 0))
+    raw_variance    = round(net_account_for - total_payments, 2)
+    cash_over_short = abs(raw_variance)
+    # If payments > net: overage → credit Cash O/S; if payments < net: shortage → debit
+    cash_over_short_sign = "credit" if raw_variance < 0 else "debit"
+
+    return {
+        "credit_card_fees":     f(sd.get("adj_total", 0)),   # credit card tip adjustment
+        "food_sales":           food_sales,
+        "beverage_sales":       beverage_sales,
+        "delivery_food_sales":  delivery_sales,
+        "sales_tax":            tax_total,
+        "credit_cards_ar":      credit_cards_ar,
+        "uber_eats":            uber_eats,
+        "doordash":             doordash,
+        "grubhub":              grubhub,
+        "undeposited_funds":    undeposited_funds,
+        "comps":                comps,
+        "item_discounts":       item_discounts,
+        "employee_discount":    employee_discount,
+        "promotions":           promotions,
+        "employee_tips":        employee_tips,
+        "cash_over_short":      cash_over_short,
+        "cash_over_short_sign": cash_over_short_sign,
+    }
+
+
+def _summarise(data) -> dict | None:
+    """Extract lightweight summary from operations report data for SSE progress events."""
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        sd = data.get("sales_data") or {}
+        return {
+            "total_sales":    sd.get("total_sales") or sd.get("gross_sales"),
+            "total_payments": sd.get("total_payments"),
+            "total_tax":      next(
+                (r.get("tax") for r in (data.get("tax_data") or []) if r.get("row_type") == "totals_row"),
+                None,
+            ),
+        }
+    return {"raw_type": type(data).__name__}
+
+
+# ─── Entry ───────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    log.info("Starting Revel Fetcher server on http://localhost:5050")
+    app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
