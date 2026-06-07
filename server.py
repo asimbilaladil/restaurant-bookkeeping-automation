@@ -21,14 +21,17 @@ Run:
 
 import json
 import logging
+import os
 import queue
 import threading
 from datetime import date
+from functools import wraps
 from pathlib import Path
 
-from flask import Flask, request, jsonify, Response, send_from_directory
+from flask import Flask, request, jsonify, Response, send_from_directory, session, redirect, url_for, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
+from werkzeug.security import check_password_hash
 
 from revel_fetcher import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
 from r365_fetcher import open_r365_journal_entry
@@ -37,7 +40,20 @@ load_dotenv()
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=".")
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
 CORS(app)
+
+_LOGIN_USERNAME = os.environ["LOGIN_USERNAME"]
+_LOGIN_PASSWORD_HASH = os.environ["LOGIN_PASSWORD_HASH"]
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("authenticated"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,12 +64,34 @@ log = logging.getLogger(__name__)
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if username == _LOGIN_USERNAME and check_password_hash(_LOGIN_PASSWORD_HASH, password):
+            session["authenticated"] = True
+            return redirect(url_for("index"))
+        error = "Invalid username or password."
+    login_html = Path("login.html").read_text()
+    return render_template_string(login_html, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
+@login_required
 def index():
     return send_from_directory(".", "index.html")
 
 
 @app.route("/api/establishments")
+@login_required
 def establishments():
     return jsonify({
         "establishments": DEFAULT_ESTABLISHMENTS,
@@ -62,6 +100,7 @@ def establishments():
 
 
 @app.route("/api/fetch", methods=["POST"])
+@login_required
 def fetch():
     """
     Accepts { "start_date": "YYYY-MM-DD", "establishments": [32, 14, ...] }
@@ -138,10 +177,11 @@ def fetch():
 
 
 @app.route("/api/r365/navigate", methods=["POST"])
+@login_required
 def r365_navigate():
     """
     Body: { "date": "2026-05-22", "location_name": "LCF Airtex", "revel_data": {...} }
-    Opens a headed R365 browser, logs in, navigates to DSS, and fills the Journal Entry.
+    Opens a headless R365 browser, logs in, navigates to DSS, and fills the Journal Entry.
     revel_data is the raw Revel operations report JSON for a single establishment.
     """
     body = request.get_json(force=True) or {}
@@ -164,6 +204,76 @@ def r365_navigate():
     if "error" in result:
         return jsonify(result), 500
     return jsonify(result)
+
+
+@app.route("/api/r365/reconcile-all", methods=["POST"])
+@login_required
+def r365_reconcile_all():
+    """
+    Body: { "date": "2026-05-22", "establishments": [{"id": 32, "name": "LCF Airtex", "data": {...}}, ...] }
+    Streams SSE events:
+      event: r365_progress  data: {"establishment_id": 32, "status": "running"|"success"|"error", "error": "..."}
+      event: r365_done      data: {}
+    Processes entities sequentially (one browser session at a time).
+    """
+    body = request.get_json(force=True) or {}
+    date_str = body.get("date")
+    establishments = body.get("establishments", [])
+
+    if not date_str:
+        return jsonify({"error": "date is required"}), 400
+    try:
+        target_date = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    event_queue: queue.Queue = queue.Queue()
+
+    def run_all():
+        for est in establishments:
+            est_id = est.get("id")
+            name = est.get("name")
+            data = est.get("data") or {}
+            revel_values = _extract_revel_values(data)
+
+            event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "running"})
+            try:
+                result = open_r365_journal_entry(target_date, name, revel_values)
+                if "error" in result:
+                    event_queue.put({"type": "r365_progress", "establishment_id": est_id,
+                                     "status": "error", "error": result["error"]})
+                else:
+                    event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "success"})
+            except Exception as exc:
+                log.error("R365 reconcile error for est %s: %s", est_id, exc)
+                event_queue.put({"type": "r365_progress", "establishment_id": est_id,
+                                 "status": "error", "error": str(exc)})
+
+        event_queue.put({"type": "r365_done"})
+
+    thread = threading.Thread(target=run_all, daemon=True)
+    thread.start()
+
+    def stream():
+        while True:
+            try:
+                event = event_queue.get(timeout=300)  # 5-min max per entity
+            except queue.Empty:
+                yield 'event: error\ndata: {"message": "timeout"}\n\n'
+                break
+
+            event_type = event.get("type", "message")
+            data = json.dumps(event, default=str)
+            yield f"event: {event_type}\ndata: {data}\n\n"
+
+            if event_type in ("r365_done", "error"):
+                break
+
+    return Response(
+        stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

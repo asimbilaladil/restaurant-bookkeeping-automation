@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — Daily Sales Reconciliation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 55%, #2563eb 100%);
+      padding: 24px;
+    }
+
+    .login-box {
+      background: #fff;
+      border-radius: 16px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.18), 0 24px 64px rgba(79,70,229,0.25);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .brand-icon {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .brand-icon svg { color: #fff; }
+    .brand-text h1 { font-size: 1rem; font-weight: 700; color: #0d1526; }
+    .brand-text p  { font-size: 0.73rem; color: #8594ae; font-weight: 500; margin-top: 1px; }
+
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: #0d1526;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+    .sub {
+      font-size: 0.84rem;
+      color: #8594ae;
+      margin-bottom: 28px;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+    .field label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: #4b5675;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+    .field input {
+      height: 42px;
+      padding: 0 13px;
+      border: 1.5px solid #e4e9f2;
+      border-radius: 9px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      color: #0d1526;
+      background: #fff;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .field input:focus {
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.12);
+    }
+
+    .error-msg {
+      background: #fff1f1;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+      color: #dc2626;
+      font-weight: 500;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .error-msg.show { display: block; }
+
+    .btn-login {
+      width: 100%;
+      height: 44px;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 6px;
+      box-shadow: 0 2px 8px rgba(79,70,229,0.35);
+      transition: opacity 0.15s, transform 0.15s;
+    }
+    .btn-login:hover  { opacity: 0.92; transform: translateY(-1px); }
+    .btn-login:active { opacity: 1; transform: translateY(0); }
+
+    .footer {
+      margin-top: 32px;
+      font-size: 0.72rem;
+      color: rgba(255,255,255,0.55);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<div class="login-box">
+  <div class="brand">
+    <div class="brand-icon">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+        <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <h1>AYG Foods</h1>
+      <p>Accounting Automation</p>
+    </div>
+  </div>
+
+  <h2>Sign in</h2>
+  <p class="sub">Access restricted to authorised users only.</p>
+
+  {% if error %}
+  <div class="error-msg show">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username"
+             placeholder="Enter username" required />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             placeholder="Enter password" required />
+    </div>
+    <button type="submit" class="btn-login">Sign In</button>
+  </form>
+</div>
+
+<p class="footer">Daily Sales Reconciliation &mdash; Internal use only</p>
+
+</body>
+</html>
