@@ -490,6 +490,19 @@
     .log-entry.log-revel   .log-msg { color: #2563eb; }
     .log-entry.log-r365    .log-msg { color: #7c3aed; }
     .log-entry.log-start   .log-msg { color: var(--text); font-weight: 600; }
+    .log-link {
+      margin-left: 8px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 1px 7px;
+      border-radius: 4px;
+      border: 1px solid currentColor;
+      opacity: 0.65;
+      text-decoration: none;
+      color: inherit;
+      white-space: nowrap;
+    }
+    .log-link:hover { opacity: 1; }
 
     /* ─── Side panel ─── */
     .panel-overlay {
@@ -917,7 +930,11 @@
       r365State[p.establishment_id] = { status: p.status };
       setR365Row(p.establishment_id, p.status, p.error);
       updateStats();
-      addLog(`R365 JE est=${p.establishment_id} → ${p.status}${p.error ? ": " + p.error : ""}`);
+      const name = EST_NAMES[p.establishment_id] || `est=${p.establishment_id}`;
+      let extra = '';
+      if (p.r365_url)      extra += ` <a href="${p.r365_url}" target="_blank" rel="noopener" class="log-link">Open in R365</a>`;
+      if (p.screenshot_url) extra += ` <a href="${p.screenshot_url}" target="_blank" class="log-link">Screenshot</a>`;
+      addLog(`R365 JE ${name} → ${p.status}${p.error ? ": " + p.error : ""}`, extra);
     }
     if (type === "r365_done")  addLog("All journal entries posted. Reconciliation complete.");
     if (type === "error") {
@@ -1046,7 +1063,7 @@
     document.getElementById("log").innerHTML = "";
     updateStats();
   }
-  function addLog(msg) {
+  function addLog(msg, extraHtml = '') {
     const el  = document.getElementById("log");
     const ts  = new Date().toLocaleTimeString("en-US", { hour12: false });
     const row = document.createElement("div");
@@ -1064,7 +1081,7 @@
     row.innerHTML = `
       <span class="log-ts">${ts}</span>
       <span class="log-icon">${icon}</span>
-      <span class="log-msg">${msg}</span>
+      <span class="log-msg">${msg}${extraHtml}</span>
     `;
     el.appendChild(row);
     el.scrollTop = el.scrollHeight;

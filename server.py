@@ -182,6 +182,12 @@ def fetch():
     )
 
 
+@app.route("/screenshots/<path:filename>")
+@login_required
+def screenshot(filename):
+    return send_from_directory("/tmp", filename)
+
+
 @app.route("/api/r365/navigate", methods=["POST"])
 @login_required
 def r365_navigate():
@@ -249,7 +255,14 @@ def r365_reconcile_all():
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                      "status": "error", "error": result["error"]})
                 else:
-                    event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "success"})
+                    fname = result.get("screenshot_filename")
+                    event_queue.put({
+                        "type": "r365_progress",
+                        "establishment_id": est_id,
+                        "status": "success",
+                        "r365_url": result.get("url"),
+                        "screenshot_url": f"/screenshots/{fname}" if fname else None,
+                    })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)
                 event_queue.put({"type": "r365_progress", "establishment_id": est_id,

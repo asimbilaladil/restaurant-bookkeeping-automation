@@ -6,6 +6,7 @@ CLI usage:
 """
 
 import os
+import re
 import logging
 from datetime import date
 
@@ -85,7 +86,7 @@ def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bo
         return False
 
 
-def fill_journal_entry(active, revel_values: dict) -> None:
+def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png") -> None:
     """
     Fill R365 Journal Entry from Revel data.
 
@@ -164,8 +165,8 @@ def fill_journal_entry(active, revel_values: dict) -> None:
     # NOTE: 1255 - Undeposited Funds, 8000-06 - Cash Over/Short, and the
     # second 2301 - Employee Tips Payable row are read-only — R365 fills them.
 
-    active.screenshot(path="/tmp/r365_je_filled.png")
-    log.info("Journal Entry fields filled — screenshot saved")
+    active.screenshot(path=screenshot_path)
+    log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
@@ -176,6 +177,7 @@ def go_to_daily_sales_summary(
     context=None,
     location_name: str | None = None,
     revel_values: dict | None = None,
+    screenshot_path: str = "/tmp/r365_je_filled.png",
 ) -> None:
     log.info("Navigating directly to Daily Sales Summary...")
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
@@ -254,7 +256,7 @@ def go_to_daily_sales_summary(
                     found_je = True
 
                     if revel_values and found_je:
-                        fill_journal_entry(active, revel_values)
+                        fill_journal_entry(active, revel_values, screenshot_path=screenshot_path)
 
                     break
                 except Exception:
@@ -289,6 +291,11 @@ def open_r365_journal_entry(
 
     os.makedirs(PROFILE_DIR, exist_ok=True)
 
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", location_name or "unknown")
+    date_str = target_date.strftime("%Y-%m-%d") if target_date else "nodate"
+    screenshot_filename = f"r365_je_{safe_name}_{date_str}.png"
+    screenshot_path = f"/tmp/{screenshot_filename}"
+
     try:
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
@@ -300,11 +307,14 @@ def open_r365_journal_entry(
 
             page = context.pages[0] if context.pages else context.new_page()
             ensure_logged_in_r365(page, context)
-            go_to_daily_sales_summary(page, target_date, context, location_name, revel_values)
+            go_to_daily_sales_summary(
+                page, target_date, context, location_name, revel_values,
+                screenshot_path=screenshot_path,
+            )
 
             active_pages = context.pages
             url = active_pages[-1].url if active_pages else DSS_URL
-            return {"status": "ok", "url": url}
+            return {"status": "ok", "url": url, "screenshot_filename": screenshot_filename}
 
     except Exception as exc:
         log.error("R365 navigation error: %s", exc)
