@@ -72,7 +72,7 @@ def login():
         password = request.form.get("password", "")
         if username == _LOGIN_USERNAME and check_password_hash(_LOGIN_PASSWORD_HASH, password):
             session["authenticated"] = True
-            return redirect(url_for("index"))
+            return redirect(url_for("dashboard"))
         error = "Invalid username or password."
     login_html = Path("login.html").read_text()
     return render_template_string(login_html, error=error)
@@ -85,6 +85,12 @@ def logout():
 
 
 @app.route("/")
+@login_required
+def dashboard():
+    return send_from_directory(".", "dashboard.html")
+
+
+@app.route("/daily-sales-reconciliation")
 @login_required
 def index():
     return send_from_directory(".", "index.html")

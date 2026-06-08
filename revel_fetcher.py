@@ -40,22 +40,24 @@ REVEL_PASS = os.getenv("REVEL_PASS")
 BASE_URL   = "https://laynes.revelup.com"
 STATE_FILE = "/tmp/revel_session.json"
 
-DEFAULT_ESTABLISHMENTS = [32, 14, 48, 7, 6, 25, 36, 26, 20, 40, 15]
+# Single source of truth — add new locations here only.
+# Each entry is (revel_establishment_id, r365_location_name).
+ESTABLISHMENTS: list[tuple[int, str]] = [
+    (32, "LCF Airtex"),
+    (14, "LCF Beaumont"),
+    (48, "LCF Downtown Houston"),
+    (7,  "LCF Ella"),
+    (6,  "LCF Katy"),
+    (25, "LCF Mission Bend"),
+    (36, "LCF Missouri City"),
+    (26, "LCF Nederland"),
+    (20, "LCF Pasadena"),
+    (40, "LCF Rosenberg"),
+    (15, "LCF Shepherd"),
+]
 
-# Revel establishment ID → R365 Location name (used to match DSS entity)
-ESTABLISHMENT_NAMES = {
-    32: "LCF Airtex",
-    14: "LCF Beaumont",
-    48: "LCF Downtown Houston",
-    7:  "LCF Ella",
-    6:  "LCF Katy",
-    25: "LCF Mission Bend",
-    36: "LCF Missouri City",
-    26: "LCF Nederland",
-    20: "LCF Pasadena",
-    40: "LCF Rosenberg",
-    15: "LCF Shepherd",
-}
+DEFAULT_ESTABLISHMENTS: list[int] = [est_id for est_id, _ in ESTABLISHMENTS]
+ESTABLISHMENT_NAMES: dict[int, str] = {est_id: name for est_id, name in ESTABLISHMENTS}
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 log = logging.getLogger(__name__)

@@ -3,288 +3,724 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Revel Operations Report Fetcher</title>
+  <title>Daily Sales Reconciliation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --bg:        #f4f6fb;
+      --white:     #ffffff;
+      --border:    #e4e9f2;
+      --border2:   #d0d9ea;
+      --text:      #0d1526;
+      --sub:       #4b5675;
+      --muted:     #8594ae;
+      --indigo:    #4f46e5;
+      --indigo-lt: #eef2ff;
+      --green:     #059669;
+      --green-lt:  #ecfdf5;
+      --amber:     #d97706;
+      --amber-lt:  #fffbeb;
+      --red:       #dc2626;
+      --red-lt:    #fff1f1;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
+      --shadow-md: 0 2px 8px rgba(0,0,0,0.07), 0 12px 32px rgba(0,0,0,0.05);
+      --r:         12px;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f0f2f5;
-      color: #1a1a2e;
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
-      padding: 32px 16px;
+      padding: 0 0 80px;
     }
 
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
+    /* ─── Top banner ─── */
+    .top-bar {
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 55%, #2563eb 100%);
+      padding: 36px 32px 32px;
+      position: relative;
+      overflow: hidden;
     }
-
-    h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      color: #1a1a2e;
-      margin-bottom: 4px;
+    .top-bar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 55% 80% at 95% 50%, rgba(255,255,255,0.08) 0%, transparent 70%),
+        radial-gradient(ellipse 30% 50% at 10% 80%, rgba(255,255,255,0.06) 0%, transparent 60%);
+      pointer-events: none;
     }
-    .subtitle {
-      color: #6b7280;
+    .top-bar-inner { max-width: 960px; margin: 0 auto; position: relative; display: flex; align-items: flex-start; justify-content: space-between; }
+    .top-bar-left { flex: 1; }
+    .btn-logout {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.9);
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s;
+      flex-shrink: 0;
+      margin-top: 4px;
+    }
+    .btn-logout:hover { background: rgba(255,255,255,0.22); }
+    .btn-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.20);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.8);
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s;
+      flex-shrink: 0;
+      margin-top: 4px;
+    }
+    .btn-back:hover { background: rgba(255,255,255,0.18); }
+    .top-bar-actions { display: flex; align-items: center; gap: 8px; }
+    .top-bar-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 99px;
+      padding: 3px 12px 3px 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.9);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 14px;
+    }
+    .top-bar-badge svg { opacity: 0.8; }
+    .top-bar h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+    .top-bar p {
       font-size: 0.9rem;
-      margin-bottom: 28px;
+      color: rgba(255,255,255,0.65);
+      font-weight: 400;
+      max-width: 480px;
     }
 
-    /* ─── Controls card ─── */
+    /* ─── Main container ─── */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 28px 24px 0;
+    }
+
+    /* ─── White card ─── */
     .card {
-      background: #fff;
-      border-radius: 12px;
-      padding: 24px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-      margin-bottom: 24px;
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: var(--shadow-sm);
     }
 
-    .controls {
+    /* ─── Controls ─── */
+    .controls-card {
+      padding: 18px 22px;
+      margin-bottom: 20px;
       display: flex;
       align-items: flex-end;
-      gap: 16px;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    label {
-      font-size: 0.82rem;
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label {
+      font-size: 0.72rem;
       font-weight: 600;
-      color: #374151;
+      color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.07em;
     }
     input[type="date"] {
-      padding: 10px 14px;
-      border: 1.5px solid #d1d5db;
+      height: 40px;
+      padding: 0 13px;
+      border: 1.5px solid var(--border2);
       border-radius: 8px;
-      font-size: 0.95rem;
-      color: #1a1a2e;
+      font-size: 0.88rem;
+      font-family: inherit;
+      color: var(--text);
+      background: var(--white);
       outline: none;
-      transition: border-color 0.15s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    input[type="date"]:focus { border-color: #4f46e5; }
+    input[type="date"]:focus {
+      border-color: var(--indigo);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.12);
+    }
 
     .btn {
-      padding: 10px 24px;
-      border: none;
+      height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 18px;
       border-radius: 8px;
-      font-size: 0.95rem;
+      border: none;
+      font-family: inherit;
+      font-size: 0.875rem;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s, opacity 0.15s;
+      transition: all 0.16s;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
     .btn-primary {
-      background: #4f46e5;
+      background: var(--indigo);
+      color: #fff;
+      box-shadow: 0 1px 2px rgba(79,70,229,0.25), 0 4px 12px rgba(79,70,229,0.2);
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #4338ca;
+      box-shadow: 0 2px 4px rgba(79,70,229,0.3), 0 8px 20px rgba(79,70,229,0.25);
+      transform: translateY(-1px);
+    }
+
+    .btn-outline {
+      background: var(--white);
+      color: var(--sub);
+      border: 1.5px solid var(--border2);
+    }
+    .btn-outline:hover:not(:disabled) { border-color: var(--indigo); color: var(--indigo); background: var(--indigo-lt); }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--sub);
+      border: 1.5px solid var(--border);
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--border2); color: var(--text); }
+
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      border-radius: 99px;
+      font-size: 0.69rem;
+      font-weight: 700;
+      background: var(--indigo);
       color: #fff;
     }
-    .btn-primary:hover:not(:disabled) { background: #4338ca; }
-    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-secondary {
-      background: #f3f4f6;
-      color: #374151;
-    }
-    .btn-secondary:hover:not(:disabled) { background: #e5e7eb; }
+    .count-badge.partial { background: var(--amber); }
 
-    /* ─── Progress grid ─── */
-    .section-title {
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: #6b7280;
+    /* ─── Stats row ─── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      padding: 18px 20px;
+      border-radius: var(--r);
+    }
+    .stat-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .stat-label {
+      font-size: 0.72rem;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 14px;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+    }
+    .stat-icon {
+      width: 28px; height: 28px;
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.8rem;
+    }
+    .stat-val {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      color: var(--text);
+    }
+    .stat-val span { font-size: 1rem; font-weight: 500; color: var(--muted); }
+    .stat-revel .stat-icon { background: var(--indigo-lt); color: var(--indigo); }
+    .stat-r365  .stat-icon { background: var(--green-lt);  color: var(--green); }
+    .stat-errs  .stat-icon { background: var(--red-lt);    color: var(--red); }
+    .stat-revel .stat-val  { color: var(--indigo); }
+    .stat-r365  .stat-val  { color: var(--green); }
+    .stat-errs  .stat-val  { color: var(--red); }
+
+    /* ─── Section header ─── */
+    .section-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .section-hdr h2 {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
     }
 
+    /* ─── Entity grid ─── */
     .est-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+      gap: 10px;
     }
 
     .est-card {
+      background: var(--white);
+      border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 14px 16px;
-      border: 1.5px solid #e5e7eb;
-      background: #fafafa;
-      transition: border-color 0.2s, background 0.2s;
+      padding: 15px;
+      box-shadow: var(--shadow-sm);
+      border-top: 3px solid var(--border2);
+      transition: border-top-color 0.25s, box-shadow 0.25s, background 0.25s;
+      position: relative;
     }
-    .est-card.pending  { border-color: #e5e7eb; background: #fafafa; }
-    .est-card.running  { border-color: #fbbf24; background: #fffbeb; }
-    .est-card.success  { border-color: #10b981; background: #ecfdf5; }
-    .est-card.error    { border-color: #ef4444; background: #fef2f2; }
+    .est-card:hover { box-shadow: var(--shadow-md); }
 
-    .est-id {
-      font-size: 1.1rem;
-      font-weight: 700;
-      margin-bottom: 4px;
+    .est-card.pending { border-top-color: #cbd5e1; }
+    .est-card.running {
+      border-top-color: var(--amber);
+      background: linear-gradient(180deg, #fffdf5 0%, #ffffff 40%);
     }
-    .est-status {
-      font-size: 0.78rem;
-      color: #6b7280;
-      margin-bottom: 6px;
+    .est-card.success {
+      border-top-color: var(--green);
+      background: linear-gradient(180deg, #f0fdf9 0%, #ffffff 40%);
     }
-    .est-card.running .est-status  { color: #d97706; }
-    .est-card.success .est-status  { color: #059669; }
-    .est-card.error   .est-status  { color: #dc2626; }
-
-    .est-summary {
-      font-size: 0.78rem;
-      color: #374151;
-      line-height: 1.5;
+    .est-card.error {
+      border-top-color: var(--red);
+      background: linear-gradient(180deg, #fff5f5 0%, #ffffff 40%);
     }
 
-    /* ─── Summary bar ─── */
-    .summary-bar {
+    .card-top {
       display: flex;
-      gap: 20px;
-      flex-wrap: wrap;
-      margin-bottom: 24px;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 12px;
     }
-    .stat {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .stat-value {
-      font-size: 1.5rem;
+    .card-names { flex: 1; min-width: 0; }
+    .card-loc {
+      font-size: 0.83rem;
       font-weight: 700;
-      color: #4f46e5;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 2px;
     }
-    .stat-label {
-      font-size: 0.75rem;
-      color: #6b7280;
+    .card-id { font-size: 0.69rem; font-weight: 500; color: var(--muted); }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 0.67rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .status-pill.pending { background: #f1f5f9; color: var(--muted); }
+    .status-pill.running { background: var(--amber-lt); color: var(--amber); }
+    .status-pill.success { background: var(--green-lt); color: var(--green); }
+    .status-pill.error   { background: var(--red-lt);   color: var(--red); }
+    .status-pill .dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status-pill.running .dot { animation: blink 1s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ─── Progress rows ─── */
+    .card-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 0 0 10px;
+    }
+    .card-rows { display: flex; flex-direction: column; gap: 9px; }
+    .card-row  { display: flex; flex-direction: column; gap: 4px; }
+
+    .row-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .row-label {
+      font-size: 0.65rem;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.07em;
+      color: var(--muted);
     }
+    .row-state {
+      font-size: 0.67rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .row-state.running { color: var(--amber); }
+    .row-state.success { color: var(--green); }
+    .row-state.error   { color: var(--red); }
+
+    .prog-track {
+      height: 4px;
+      background: #f1f5f9;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .prog-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 99px;
+      background: #cbd5e1;
+      transition: width 0.45s ease, background 0.3s;
+    }
+    .prog-fill.running {
+      width: 60%;
+      background: var(--amber);
+      animation: prog-pulse 1.4s ease-in-out infinite;
+    }
+    .prog-fill.success { width: 100%; background: var(--green); }
+    .prog-fill.error   { width: 100%; background: var(--red); }
+    @keyframes prog-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
     /* ─── Results table ─── */
-    .table-wrap {
-      overflow-x: auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.88rem;
-    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
     th {
       text-align: left;
       padding: 10px 14px;
-      background: #f9fafb;
-      border-bottom: 2px solid #e5e7eb;
-      font-size: 0.78rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
       font-weight: 700;
-      color: #6b7280;
+      color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.07em;
       white-space: nowrap;
+      background: #fafbfd;
     }
     td {
-      padding: 10px 14px;
-      border-bottom: 1px solid #f3f4f6;
-      color: #374151;
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--sub);
+      vertical-align: middle;
     }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #f9fafb; }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
+    tr:hover td { background: #f9fafc; }
+
+    .tbl-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 9px;
       border-radius: 99px;
-      font-size: 0.75rem;
-      font-weight: 600;
+      font-size: 0.71rem;
+      font-weight: 700;
     }
-    .badge-success { background: #d1fae5; color: #065f46; }
-    .badge-error   { background: #fee2e2; color: #991b1b; }
+    .tbl-badge.ok  { background: var(--green-lt); color: var(--green); }
+    .tbl-badge.err { background: var(--red-lt);   color: var(--red); }
 
     /* ─── Log ─── */
     #log {
-      background: #1e1e2e;
-      color: #a6e3a1;
-      border-radius: 10px;
-      padding: 16px;
-      font-family: "SF Mono", "Fira Code", monospace;
-      font-size: 0.8rem;
-      line-height: 1.6;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 8px;
       max-height: 220px;
       overflow-y: auto;
-      white-space: pre-wrap;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.76rem;
     }
+    .log-entry {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 6px 14px;
+      border-bottom: 1px solid #f1f4f9;
+      line-height: 1.5;
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry:hover { background: #f1f5fb; }
+    .log-ts {
+      font-size: 0.7rem;
+      color: var(--muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding-top: 1px;
+    }
+    .log-icon { flex-shrink: 0; font-size: 0.75rem; }
+    .log-msg  { color: var(--sub); flex: 1; word-break: break-word; }
+    .log-entry.log-success .log-msg { color: var(--green); }
+    .log-entry.log-error   .log-msg { color: var(--red); }
+    .log-entry.log-revel   .log-msg { color: #2563eb; }
+    .log-entry.log-r365    .log-msg { color: #7c3aed; }
+    .log-entry.log-start   .log-msg { color: var(--text); font-weight: 600; }
 
+    /* ─── Side panel ─── */
+    .panel-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(13,21,38,0.4);
+      z-index: 300;
+      display: flex;
+      justify-content: flex-end;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      backdrop-filter: blur(2px);
+    }
+    .panel-overlay.open { opacity: 1; pointer-events: all; }
+
+    .side-panel {
+      width: 285px;
+      height: 100vh;
+      background: var(--white);
+      border-left: 1px solid var(--border);
+      box-shadow: -8px 0 40px rgba(0,0,0,0.12);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.22s cubic-bezier(.4,0,.2,1);
+    }
+    .panel-overlay.open .side-panel { transform: translateX(0); }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .panel-header h3 { font-size: 0.88rem; font-weight: 700; color: var(--text); }
+    .panel-close {
+      width: 28px; height: 28px;
+      border: 1px solid var(--border2);
+      background: var(--bg);
+      border-radius: 7px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      color: var(--muted);
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .panel-close:hover { background: var(--border); color: var(--text); }
+
+    .panel-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 11px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: #fafbfd;
+    }
+    .panel-act-btn {
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border2);
+      background: var(--white);
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--sub);
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.13s;
+    }
+    .panel-act-btn:hover { background: var(--indigo-lt); color: var(--indigo); border-color: var(--indigo); }
+    .panel-sel-info { margin-left: auto; font-size: 0.72rem; color: var(--muted); font-weight: 500; }
+
+    .panel-list { flex: 1; overflow-y: auto; }
+    .panel-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 10px 20px;
+      cursor: pointer;
+      transition: background 0.1s;
+      border-bottom: 1px solid #f7f8fc;
+      user-select: none;
+    }
+    .panel-item:hover { background: #f7f9ff; }
+    .panel-item input[type="checkbox"] {
+      width: 15px; height: 15px;
+      accent-color: var(--indigo);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .panel-item-info { flex: 1; }
+    .panel-item-name { font-size: 0.8rem; font-weight: 600; color: var(--text); margin-bottom: 1px; }
+    .panel-item-id   { font-size: 0.7rem; color: var(--muted); }
+
+    /* ─── Shared ─── */
+    .card-section { padding: 20px 22px; margin-bottom: 16px; }
     .hidden { display: none; }
     .spinner {
       display: inline-block;
-      width: 14px; height: 14px;
-      border: 2px solid #fbbf24;
+      width: 9px; height: 9px;
+      border: 1.5px solid currentColor;
       border-top-color: transparent;
       border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      animation: spin 0.65s linear infinite;
       vertical-align: middle;
-      margin-right: 4px;
+      margin-right: 3px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+
+<!-- ─── Side panel ──────────────────────────────────────────────────────────── -->
+<div class="panel-overlay" id="panelOverlay" onclick="overlayClick(event)">
+  <div class="side-panel">
+    <div class="panel-header">
+      <h3>Select Establishments</h3>
+      <button class="panel-close" onclick="closePanel()">✕</button>
+    </div>
+    <div class="panel-actions">
+      <button class="panel-act-btn" onclick="selectAll()">All</button>
+      <button class="panel-act-btn" onclick="selectNone()">None</button>
+      <span class="panel-sel-info" id="panelSelCount"></span>
+    </div>
+    <div class="panel-list" id="panelList"></div>
+  </div>
+</div>
+
+<!-- ─── Header ──────────────────────────────────────────────────────────────── -->
+<div class="top-bar">
+  <div class="top-bar-inner">
+    <div class="top-bar-left">
+      <div class="top-bar-badge">
+        <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>
+        Accounting Automation
+      </div>
+      <h1>Daily Sales Reconciliation</h1>
+      <p>Fetch Revel POS reports and auto-post journal entries to Restaurant365 across all locations</p>
+    </div>
+    <div class="top-bar-actions">
+      <a href="/" class="btn-back">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 10H4M10 16l-6-6 6-6"/></svg>
+        Dashboard
+      </a>
+      <a href="/logout" class="btn-logout">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 00-2 2v10a2 2 0 002 2h4M13 7l4 3-4 3M17 10H7"/></svg>
+        Sign Out
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Main ─────────────────────────────────────────────────────────────────── -->
 <div class="container">
 
-  <h1>Revel → R365 Tools</h1>
-  <p class="subtitle">Fetch Revel reports, then open R365 Daily Sales Summary for the same date</p>
-
   <!-- Controls -->
-  <div class="card">
-    <div class="controls">
-      <div class="field">
-        <label for="startDate">Start Date</label>
-        <input type="date" id="startDate" />
-      </div>
-      <button class="btn btn-primary" id="fetchBtn" onclick="startFetch()">Fetch Reports</button>
-      <button class="btn btn-secondary" id="exportBtn" onclick="exportJSON()" disabled>Export JSON</button>
-      <button class="btn btn-secondary hidden" id="r365Btn" onclick="openR365()">Open in R365</button>
+  <div class="card controls-card">
+    <div class="field">
+      <label for="startDate">Posting Date</label>
+      <input type="date" id="startDate" />
     </div>
-    <div id="r365Status" style="margin-top:12px;font-size:0.88rem;"></div>
+    <button class="btn btn-outline" id="configBtn" onclick="openPanel()">
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="3"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M4.9 15.1l1.4-1.4M13.7 6.3l1.4-1.4"/></svg>
+      Locations
+      <span class="count-badge" id="cfgCount">11</span>
+    </button>
+    <button class="btn btn-primary" id="fetchBtn" onclick="startFetch()">
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
+      Run Reconciliation
+    </button>
+    <button class="btn btn-ghost" id="exportBtn" onclick="exportJSON()" disabled>
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 16h12M10 4v9M6 9l4 4 4-4"/></svg>
+      Export
+    </button>
   </div>
 
-  <!-- Summary stats -->
-  <div class="card hidden" id="summaryCard">
-    <div class="section-title">Summary</div>
-    <div class="summary-bar">
-      <div class="stat">
-        <span class="stat-value" id="statDone">0 / 11</span>
-        <span class="stat-label">Completed</span>
+  <!-- Stats -->
+  <div class="stats-row hidden" id="summaryCard">
+    <div class="card stat-card stat-revel">
+      <div class="stat-top">
+        <span class="stat-label">Revel Fetched</span>
+        <span class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z"/><path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z"/><path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z"/></svg>
+        </span>
       </div>
-      <div class="stat">
-        <span class="stat-value" id="statSuccess">0</span>
-        <span class="stat-label">Succeeded</span>
+      <div class="stat-val" id="statRevel">0 <span>/ 0</span></div>
+    </div>
+    <div class="card stat-card stat-r365">
+      <div class="stat-top">
+        <span class="stat-label">JE Posted to R365</span>
+        <span class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+        </span>
       </div>
-      <div class="stat">
-        <span class="stat-value" id="statError">0</span>
-        <span class="stat-label">Errors</span>
+      <div class="stat-val" id="statR365">0 <span>/ 0</span></div>
+    </div>
+    <div class="card stat-card stat-errs">
+      <div class="stat-top">
+        <span class="stat-label">Exceptions</span>
+        <span class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+        </span>
       </div>
+      <div class="stat-val" id="statError">0</div>
     </div>
   </div>
 
-  <!-- Progress grid -->
-  <div class="card hidden" id="progressCard">
-    <div class="section-title">Establishments</div>
+  <!-- Entity grid -->
+  <div class="card card-section hidden" id="progressCard">
+    <div class="section-hdr">
+      <h2>Locations</h2>
+    </div>
     <div class="est-grid" id="estGrid"></div>
   </div>
 
   <!-- Results table -->
-  <div class="card hidden" id="resultsCard">
-    <div class="section-title">Results</div>
+  <div class="card card-section hidden" id="resultsCard">
+    <div class="section-hdr">
+      <h2>Revel Results</h2>
+    </div>
     <div class="table-wrap">
-      <table id="resultsTable">
+      <table>
         <thead>
           <tr>
-            <th>Establishment ID</th>
-            <th>Date Range</th>
-            <th>Status</th>
+            <th>Location</th>
+            <th>Period</th>
+            <th>Revel</th>
             <th>Details</th>
           </tr>
         </thead>
@@ -294,102 +730,99 @@
   </div>
 
   <!-- Log -->
-  <div class="card hidden" id="logCard">
-    <div class="section-title">Log</div>
+  <div class="card card-section hidden" id="logCard">
+    <div class="section-hdr"><h2>Activity Log</h2></div>
     <div id="log"></div>
   </div>
 
 </div>
 
 <script>
-  const ESTABLISHMENTS = [32, 14, 48, 7, 6, 25, 36, 26, 20, 40, 15];
+  const ALL_ESTABLISHMENTS = [32, 14, 48, 7, 6, 25, 36, 26, 20, 40, 15];
   const EST_NAMES = {
-    32: "LCF Airtex", 14: "LCF Beaumont", 48: "LCF Downtown Houston",
-    7: "LCF Ella", 6: "LCF Katy", 25: "LCF Mission Bend",
-    36: "LCF Missouri City", 26: "LCF Nederland", 20: "LCF Pasadena",
-    40: "LCF Rosenberg", 15: "LCF Shepherd",
+    32: "LCF Airtex",           14: "LCF Beaumont",
+    48: "LCF Downtown Houston",  7: "LCF Ella",
+     6: "LCF Katy",             25: "LCF Mission Bend",
+    36: "LCF Missouri City",    26: "LCF Nederland",
+    20: "LCF Pasadena",         40: "LCF Rosenberg",
+    15: "LCF Shepherd",
   };
-  let allResults = [];
-  let estState = {};
+
+  let enabledEsts = new Set(ALL_ESTABLISHMENTS);
+  let allResults  = [];
+  let revelState  = {};
+  let r365State   = {};
 
   // ─── Init ─────────────────────────────────────────────────────────────────
   window.onload = () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    document.getElementById("startDate").value = yesterday.toISOString().slice(0, 10);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const todayStr = today.toISOString().slice(0, 10);
+    const input = document.getElementById("startDate");
+    input.max = todayStr;
+    input.value = yesterday.toISOString().slice(0, 10);
+    buildPanelList();
+    updateConfigBtn();
   };
 
-  // ─── R365 Navigator ───────────────────────────────────────────────────────
-  async function openR365(estId) {
-    const dateVal = document.getElementById("startDate").value;
-    const locationName = EST_NAMES[estId] || null;
-    const status = document.getElementById("r365Status");
+  // ─── Panel ────────────────────────────────────────────────────────────────
+  function openPanel()  { document.getElementById("panelOverlay").classList.add("open"); document.body.style.overflow = "hidden"; }
+  function closePanel() { document.getElementById("panelOverlay").classList.remove("open"); document.body.style.overflow = ""; }
+  function overlayClick(e) { if (e.target === document.getElementById("panelOverlay")) closePanel(); }
 
-    // Disable all r365 buttons while navigating
-    document.querySelectorAll(".r365-est-btn").forEach(b => b.disabled = true);
-    document.getElementById("r365Btn").disabled = true;
-
-    const label = locationName ? `${locationName} (Est. ${estId})` : (estId ? `Est. ${estId}` : "first entity");
-    status.textContent = `Opening R365 for ${label} on ${dateVal}… (30–60s)`;
-    status.style.color = "#d97706";
-
-    try {
-      const body = { date: dateVal };
-      if (locationName) body.location_name = locationName;
-
-      // Pass full revel_data so server can extract all JE field values
-      if (estId) {
-        const result = allResults.find(r => r.establishment_id === estId);
-        body.revel_data = result?.data || {};
-      }
-
-      const resp = await fetch("/api/r365/navigate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      if (data.error) {
-        status.textContent = "Error: " + data.error;
-        status.style.color = "#dc2626";
-      } else {
-        status.textContent = `R365 opened — ${label} on ${dateVal}`;
-        status.style.color = "#059669";
-      }
-    } catch (e) {
-      status.textContent = "Request failed: " + e.message;
-      status.style.color = "#dc2626";
-    } finally {
-      document.querySelectorAll(".r365-est-btn").forEach(b => b.disabled = false);
-      document.getElementById("r365Btn").disabled = false;
+  function buildPanelList() {
+    const list = document.getElementById("panelList");
+    list.innerHTML = "";
+    for (const id of ALL_ESTABLISHMENTS) {
+      const item = document.createElement("label");
+      item.className = "panel-item";
+      item.innerHTML = `
+        <input type="checkbox" ${enabledEsts.has(id) ? "checked" : ""}
+               onchange="toggleEst(${id}, this.checked)" />
+        <div class="panel-item-info">
+          <div class="panel-item-name">${EST_NAMES[id] || "Est. " + id}</div>
+          <div class="panel-item-id">Est. ${id}</div>
+        </div>
+      `;
+      list.appendChild(item);
     }
+    updatePanelCount();
   }
 
-  // ─── Start fetch ──────────────────────────────────────────────────────────
+  function toggleEst(id, checked) {
+    if (checked) enabledEsts.add(id); else enabledEsts.delete(id);
+    updatePanelCount();
+    updateConfigBtn();
+  }
+
+  function selectAll()  { enabledEsts = new Set(ALL_ESTABLISHMENTS); buildPanelList(); updateConfigBtn(); }
+  function selectNone() { enabledEsts = new Set(); buildPanelList(); updateConfigBtn(); }
+
+  function updatePanelCount() {
+    document.getElementById("panelSelCount").textContent =
+      `${enabledEsts.size} of ${ALL_ESTABLISHMENTS.length} selected`;
+  }
+
+  function updateConfigBtn() {
+    const n = enabledEsts.size;
+    const badge = document.getElementById("cfgCount");
+    badge.textContent = n;
+    badge.className = "count-badge" + (n < ALL_ESTABLISHMENTS.length ? " partial" : "");
+  }
+
+  // ─── Fetch ────────────────────────────────────────────────────────────────
   function startFetch() {
     const startDate = document.getElementById("startDate").value;
-    if (!startDate) { alert("Please pick a start date."); return; }
+    if (!startDate) { alert("Please pick a posting date."); return; }
+    if (enabledEsts.size === 0) { alert("No locations selected. Use the Locations button to choose establishments."); return; }
 
-    allResults = [];
-    estState = {};
-    resetUI();
-    showAll();
-    buildEstGrid();
-    addLog(`Starting fetch for ${startDate}...`);
+    allResults = []; revelState = {}; r365State = {};
+    resetUI(); showAll(); buildEstGrid();
+    addLog(`Reconciliation started — ${enabledEsts.size} location(s) for ${startDate}`);
 
     document.getElementById("fetchBtn").disabled = true;
     document.getElementById("exportBtn").disabled = true;
-    document.getElementById("r365Btn").classList.add("hidden");
-    document.getElementById("r365Status").textContent = "";
-    document.querySelectorAll(".r365-est-btn").forEach(b => b.classList.add("hidden"));
-
-    const evtSource = new EventSource(
-      `/api/fetch?_t=${Date.now()}`,   // cache-bust
-    );
-
-    // POST via fetch + SSE trick: close the EventSource approach,
-    // instead we use fetch + ReadableStream for SSE over POST
-    evtSource.close();
     fetchSSE(startDate);
   }
 
@@ -397,206 +830,252 @@
     const resp = await fetch("/api/fetch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ start_date: startDate, establishments: ESTABLISHMENTS }),
+      body: JSON.stringify({ start_date: startDate, establishments: [...enabledEsts] }),
     });
-
     if (!resp.ok) {
-      const err = await resp.text();
-      addLog(`ERROR: ${err}`);
+      addLog(`ERROR: ${await resp.text()}`);
+      document.getElementById("fetchBtn").disabled = false;
+      return;
+    }
+    await readSSE(resp, handleRevelEvent);
+  }
+
+  async function readSSE(resp, handler) {
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const chunks = buf.split("\n\n");
+      buf = chunks.pop();
+      for (const chunk of chunks) {
+        if (!chunk.trim()) continue;
+        let type = "message", data = "";
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("event: ")) type = line.slice(7).trim();
+          if (line.startsWith("data: "))  data = line.slice(6).trim();
+        }
+        if (!data) continue;
+        try { handler(type, JSON.parse(data)); } catch(e) { addLog(`Parse error: ${e.message}`); }
+      }
+    }
+  }
+
+  // ─── Revel events ─────────────────────────────────────────────────────────
+  function handleRevelEvent(type, p) {
+    if (type === "progress") {
+      revelState[p.establishment_id] = { status: p.status };
+      updateCard(p.establishment_id, p.status);
+      setRevelRow(p.establishment_id, p.status, p.error);
+      updateStats();
+      addLog(`Revel est=${p.establishment_id} → ${p.status}${p.error ? ": " + p.error : ""}`);
+    }
+    if (type === "done") {
+      allResults = p.results || [];
+      populateTable(allResults);
+      document.getElementById("resultsCard").classList.remove("hidden");
+      document.getElementById("exportBtn").disabled = false;
+      addLog(`Revel complete. Posting journal entries to R365…`);
+      startR365(allResults);
+    }
+    if (type === "error") {
+      addLog(`FETCH ERROR: ${p.message}`);
+      document.getElementById("fetchBtn").disabled = false;
+    }
+  }
+
+  // ─── R365 reconcile ───────────────────────────────────────────────────────
+  async function startR365(results) {
+    const dateVal = document.getElementById("startDate").value;
+    const ests = results
+      .filter(r => enabledEsts.has(r.establishment_id) && EST_NAMES[r.establishment_id])
+      .map(r => ({ id: r.establishment_id, name: EST_NAMES[r.establishment_id], data: r.data || {} }));
+
+    for (const e of ests) setR365Row(e.id, "pending");
+
+    let resp;
+    try {
+      resp = await fetch("/api/r365/reconcile-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: dateVal, establishments: ests }),
+      });
+    } catch(e) {
+      addLog(`R365 connection failed: ${e.message}`);
       document.getElementById("fetchBtn").disabled = false;
       return;
     }
 
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete SSE messages
-      const messages = buffer.split("\n\n");
-      buffer = messages.pop(); // keep incomplete trailing chunk
-
-      for (const msg of messages) {
-        if (!msg.trim()) continue;
-        const lines = msg.split("\n");
-        let eventType = "message", dataStr = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-          if (line.startsWith("data: "))  dataStr = line.slice(6).trim();
-        }
-        if (!dataStr) continue;
-
-        try {
-          const payload = JSON.parse(dataStr);
-          handleEvent(eventType, payload);
-        } catch(e) {
-          addLog(`Parse error: ${e.message}`);
-        }
-      }
-    }
-
+    await readSSE(resp, handleR365Event);
     document.getElementById("fetchBtn").disabled = false;
   }
 
-  // ─── Event handler ────────────────────────────────────────────────────────
-  function handleEvent(type, payload) {
-    if (type === "progress") {
-      const { establishment_id, status, error, summary, range_from, range_to } = payload;
-      estState[establishment_id] = { status, error, summary, range_from, range_to };
-      updateEstCard(establishment_id, status, error, summary);
-      updateSummaryStats();
-      addLog(`est=${establishment_id} → ${status}${error ? ": " + error : ""}`);
+  function handleR365Event(type, p) {
+    if (type === "r365_progress") {
+      r365State[p.establishment_id] = { status: p.status };
+      setR365Row(p.establishment_id, p.status, p.error);
+      updateStats();
+      addLog(`R365 JE est=${p.establishment_id} → ${p.status}${p.error ? ": " + p.error : ""}`);
     }
-
-    if (type === "done") {
-      allResults = payload.results || [];
-      populateResultsTable(allResults);
-      document.getElementById("resultsCard").classList.remove("hidden");
-      document.getElementById("exportBtn").disabled = false;
-      document.getElementById("r365Btn").classList.remove("hidden");
-      document.getElementById("r365Status").textContent = "";
-      // Show per-establishment R365 buttons
-      document.querySelectorAll(".r365-est-btn").forEach(b => b.classList.remove("hidden"));
-      addLog(`Done. ${allResults.length} establishments processed.`);
-    }
-
+    if (type === "r365_done")  addLog("All journal entries posted. Reconciliation complete.");
     if (type === "error") {
-      addLog(`FETCH ERROR: ${payload.message}`);
+      addLog(`R365 error: ${p.message || "unknown"}`);
       document.getElementById("fetchBtn").disabled = false;
     }
   }
 
-  // ─── UI helpers ──────────────────────────────────────────────────────────
+  // ─── Card state ───────────────────────────────────────────────────────────
+  function updateCard(id, status) {
+    const card = document.getElementById(`est-${id}`);
+    const pill = document.getElementById(`pill-${id}`);
+    if (!card || !pill) return;
+    card.className = `est-card ${status}`;
+    pill.className = `status-pill ${status}`;
+    const labels = { pending: "Pending", running: "Fetching", success: "Done", error: "Error" };
+    pill.innerHTML = `<span class="dot"></span>${labels[status] || status}`;
+  }
+
+  function setRevelRow(id, status, error) {
+    const state = document.getElementById(`revel-state-${id}`);
+    const fill  = document.getElementById(`revel-fill-${id}`);
+    if (!state || !fill) return;
+    state.className = `row-state ${status}`;
+    fill.className  = `prog-fill ${status}`;
+    if (status === "running") state.innerHTML = `<span class="spinner"></span>Fetching`;
+    else if (status === "success") state.textContent = "✓ Complete";
+    else if (status === "error")   state.textContent = "✗ Error";
+    else state.textContent = "—";
+  }
+
+  function setR365Row(id, status, error) {
+    const state = document.getElementById(`r365-state-${id}`);
+    const fill  = document.getElementById(`r365-fill-${id}`);
+    if (!state || !fill) return;
+    state.className = `row-state ${status}`;
+    fill.className  = `prog-fill ${status}`;
+    if (status === "pending")      state.textContent = "Waiting";
+    else if (status === "running") state.innerHTML = `<span class="spinner"></span>Posting JE`;
+    else if (status === "success") state.textContent = "✓ Posted";
+    else if (status === "error")   state.textContent = `✗ ${(error || "Error").slice(0, 28)}`;
+  }
+
+  // ─── Build grid ───────────────────────────────────────────────────────────
   function buildEstGrid() {
     const grid = document.getElementById("estGrid");
     grid.innerHTML = "";
-    for (const id of ESTABLISHMENTS) {
-      const name = EST_NAMES[id] || "";
-      const card = document.createElement("div");
-      card.className = "est-card pending";
-      card.id = `est-${id}`;
-      card.innerHTML = `
-        <div class="est-id">Est. ${id}</div>
-        ${name ? `<div style="font-size:0.75rem;color:#6b7280;margin-bottom:2px;">${name}</div>` : ""}
-        <div class="est-status">Pending</div>
-        <div class="est-summary"></div>
-        <button class="r365-est-btn hidden" onclick="openR365(${id})"
-          style="margin-top:8px;font-size:0.72rem;padding:4px 10px;border:1px solid #6366f1;
-                 background:#eef2ff;color:#4f46e5;border-radius:6px;cursor:pointer;">
-          Open in R365
-        </button>
+    for (const id of ALL_ESTABLISHMENTS) {
+      if (!enabledEsts.has(id)) continue;
+      const name = EST_NAMES[id] || "Est. " + id;
+      const d = document.createElement("div");
+      d.className = "est-card pending";
+      d.id = `est-${id}`;
+      d.innerHTML = `
+        <div class="card-top">
+          <div class="card-names">
+            <div class="card-loc">${name}</div>
+            <div class="card-id">Est. ${id}</div>
+          </div>
+          <span id="pill-${id}" class="status-pill pending"><span class="dot"></span>Pending</span>
+        </div>
+        <div class="card-divider"></div>
+        <div class="card-rows">
+          <div class="card-row">
+            <div class="row-hdr">
+              <span class="row-label">Revel POS</span>
+              <span id="revel-state-${id}" class="row-state">—</span>
+            </div>
+            <div class="prog-track"><div id="revel-fill-${id}" class="prog-fill"></div></div>
+          </div>
+          <div class="card-row">
+            <div class="row-hdr">
+              <span class="row-label">R365 Journal Entry</span>
+              <span id="r365-state-${id}" class="row-state">—</span>
+            </div>
+            <div class="prog-track"><div id="r365-fill-${id}" class="prog-fill"></div></div>
+          </div>
+        </div>
       `;
-      grid.appendChild(card);
+      grid.appendChild(d);
     }
   }
 
-  function updateEstCard(id, status, error, summary) {
-    const card = document.getElementById(`est-${id}`);
-    if (!card) return;
-    card.className = `est-card ${status}`;
-
-    const statusEl = card.querySelector(".est-status");
-    const summaryEl = card.querySelector(".est-summary");
-
-    if (status === "running") {
-      statusEl.innerHTML = `<span class="spinner"></span>Fetching…`;
-    } else if (status === "success") {
-      statusEl.textContent = "✓ Done";
-    } else {
-      statusEl.textContent = `✗ Error`;
-    }
-
-    if (summary && !error) {
-      const lines = [];
-      if (summary.total_sales   != null) lines.push(`Sales: ${fmt(summary.total_sales)}`);
-      if (summary.order_count   != null) lines.push(`Orders: ${summary.order_count}`);
-      if (summary.total_tax     != null) lines.push(`Tax: ${fmt(summary.total_tax)}`);
-      if (summary.total_discount!= null) lines.push(`Disc: ${fmt(summary.total_discount)}`);
-      summaryEl.textContent = lines.join(" · ");
-    } else if (error) {
-      summaryEl.textContent = error.slice(0, 60);
-    }
+  // ─── Stats ────────────────────────────────────────────────────────────────
+  function updateStats() {
+    const total  = enabledEsts.size;
+    const rDone  = Object.values(revelState).filter(s => s.status === "success").length;
+    const r3Done = Object.values(r365State).filter(s => s.status === "success").length;
+    const errs   = Object.values(revelState).filter(s => s.status === "error").length
+                 + Object.values(r365State).filter(s => s.status === "error").length;
+    document.getElementById("statRevel").innerHTML = `${rDone} <span>/ ${total}</span>`;
+    document.getElementById("statR365").innerHTML  = `${r3Done} <span>/ ${total}</span>`;
+    document.getElementById("statError").textContent = errs;
   }
 
-  function updateSummaryStats() {
-    const done    = Object.keys(estState).length;
-    const success = Object.values(estState).filter(s => s.status === "success").length;
-    const errors  = Object.values(estState).filter(s => s.status === "error").length;
-    document.getElementById("statDone").textContent    = `${done} / ${ESTABLISHMENTS.length}`;
-    document.getElementById("statSuccess").textContent = success;
-    document.getElementById("statError").textContent   = errors;
-  }
-
-  function populateResultsTable(results) {
+  // ─── Table ────────────────────────────────────────────────────────────────
+  function populateTable(results) {
     const tbody = document.getElementById("resultsBody");
     tbody.innerHTML = "";
     for (const r of results) {
+      const isErr = !!r.error;
+      const badge = isErr
+        ? `<span class="tbl-badge err">✗ Error</span>`
+        : `<span class="tbl-badge ok">✓ Success</span>`;
       const tr = document.createElement("tr");
-      const isError = !!r.error;
-      const badge = isError
-        ? `<span class="badge badge-error">Error</span>`
-        : `<span class="badge badge-success">Success</span>`;
-
-      let details = "";
-      if (isError) {
-        details = r.error;
-      } else if (r.data) {
-        const d = r.data;
-        const parts = [];
-        if (d.total_sales   != null) parts.push(`Sales: ${fmt(d.total_sales)}`);
-        if (d.order_count   != null) parts.push(`Orders: ${d.order_count}`);
-        if (d.net_sales     != null) parts.push(`Net: ${fmt(d.net_sales)}`);
-        details = parts.join("  |  ") || "Data received (no summary keys)";
-      }
-
       tr.innerHTML = `
-        <td><strong>${r.establishment_id}</strong></td>
-        <td style="font-size:0.8rem;color:#6b7280">${r.range_from || "—"} → ${r.range_to || "—"}</td>
+        <td><strong>${EST_NAMES[r.establishment_id] || r.establishment_id}</strong>
+            <span style="color:#8594ae;margin-left:6px;font-size:0.73rem">Est. ${r.establishment_id}</span></td>
+        <td style="font-size:0.8rem">${r.range_from || "—"} → ${r.range_to || "—"}</td>
         <td>${badge}</td>
-        <td>${details}</td>
+        <td style="font-size:0.82rem">${r.error || "OK"}</td>
       `;
       tbody.appendChild(tr);
     }
   }
 
+  // ─── Helpers ──────────────────────────────────────────────────────────────
   function showAll() {
     ["summaryCard", "progressCard", "logCard"].forEach(id =>
       document.getElementById(id).classList.remove("hidden")
     );
   }
-
   function resetUI() {
     document.getElementById("resultsCard").classList.add("hidden");
     document.getElementById("resultsBody").innerHTML = "";
-    document.getElementById("log").textContent = "";
-    updateSummaryStats();
+    document.getElementById("log").innerHTML = "";
+    updateStats();
   }
-
   function addLog(msg) {
-    const el = document.getElementById("log");
-    const ts = new Date().toLocaleTimeString();
-    el.textContent += `[${ts}] ${msg}\n`;
+    const el  = document.getElementById("log");
+    const ts  = new Date().toLocaleTimeString("en-US", { hour12: false });
+    const row = document.createElement("div");
+    row.className = "log-entry";
+
+    let cls = "", icon = "○";
+    const m = msg.toLowerCase();
+    if (m.includes("error") || m.includes("failed"))    { cls = "log-error";   icon = "✕"; }
+    else if (m.includes("complete") || m.includes("posted") || m.includes("✓")) { cls = "log-success"; icon = "✓"; }
+    else if (m.startsWith("reconciliation started") || m.startsWith("fetch"))   { cls = "log-start";   icon = "▶"; }
+    else if (m.includes("revel est=") || m.includes("revel complete"))          { cls = "log-revel";   icon = "◆"; }
+    else if (m.includes("r365") || m.includes("journal entr"))                  { cls = "log-r365";    icon = "◇"; }
+
+    row.classList.add(cls);
+    row.innerHTML = `
+      <span class="log-ts">${ts}</span>
+      <span class="log-icon">${icon}</span>
+      <span class="log-msg">${msg}</span>
+    `;
+    el.appendChild(row);
     el.scrollTop = el.scrollHeight;
   }
-
-  function fmt(val) {
-    if (val == null) return "—";
-    return "£" + Number(val).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
   function exportJSON() {
     if (!allResults.length) return;
     const blob = new Blob([JSON.stringify(allResults, null, 2)], { type: "application/json" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
-    const date = document.getElementById("startDate").value;
-    a.href     = url;
-    a.download = `revel_operations_${date}.json`;
+    a.href = url;
+    a.download = `reconciliation_${document.getElementById("startDate").value}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }

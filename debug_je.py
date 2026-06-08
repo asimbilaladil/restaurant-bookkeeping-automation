@@ -22,7 +22,7 @@ LOCATION    = "LCF Airtex"
 
 with sync_playwright() as p:
     ctx = p.chromium.launch_persistent_context(
-        PROFILE_DIR, headless=False, viewport={"width": 1440, "height": 900}
+        PROFILE_DIR, headless=True, viewport={"width": 1440, "height": 900}
     )
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
 

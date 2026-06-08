@@ -361,7 +361,7 @@ def open_r365_journal_entry(
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
                 PROFILE_DIR,
-                headless=False,
+                headless=True,
                 viewport={"width": 1440, "height": 900},
                 args=["--enable-features=DnsOverHttps"],
             )
