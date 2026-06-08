@@ -33,8 +33,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.security import check_password_hash
 
-from revel_fetcher import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
-from r365_fetcher import open_r365_journal_entry
+from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
+from r365 import open_r365_journal_entry
 
 load_dotenv()
 

@@ -1,85 +1,32 @@
 """
-r365_fetcher.py
-===============
-Logs into Restaurant365 (R365) and navigates to:
-  Sales Forecasting → Daily Sales Summary (Classic) → [entity] → Journal Entry
+Navigate R365 to the Daily Sales Summary Journal Entry and fill it from Revel data.
 
-Environment variables (.env):
-    R65_USER    R365 login email
-    R65_PASS    R365 login password
-    R365_URL    R365 base URL  (e.g. https://aygfoods.restaurant365.net)
+CLI usage:
+    python -m r365.journal_entry --date 2026-05-30
 """
 
 import os
 import logging
 from datetime import date
 
-from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import sync_playwright, Page
 
-load_dotenv()
-
-R365_USER    = os.getenv("R65_USER")
-R365_PASS    = os.getenv("R65_PASS")
-R365_URL     = os.getenv("R365_URL", "https://ayg.restaurant365.com")
-PROFILE_DIR  = os.path.expanduser("~/.r365_browser_profile")  # persistent profile
+from .session import R365_USER, R365_PASS, PROFILE_DIR, ensure_logged_in_r365
 
 log = logging.getLogger(__name__)
 
-
-# ─── Login ────────────────────────────────────────────────────────────────────
-
-def _dismiss_chrome_dialogs(page: Page) -> None:
-    """Dismiss Chrome password manager / breach warning overlays."""
-    try:
-        ok_btn = page.locator('div[role="dialog"] button:has-text("OK"), '
-                              'div[role="alertdialog"] button:has-text("OK")').first
-        if ok_btn.count() > 0:
-            ok_btn.click(timeout=2_000)
-            log.info("Dismissed Chrome dialog (OK clicked)")
-            page.wait_for_timeout(500)
-    except Exception:
-        pass
+DSS_URL = "https://ayg.restaurant365.com/react/sales-and-forecasting/legacy/DailySalesSummary"
 
 
-def login_r365(page: Page) -> None:
-    log.info("Logging into R365 at: %s", page.url)
-    page.wait_for_selector("#Username", timeout=30_000)
-    page.fill("#Username", R365_USER)
-    page.fill("#Password", R365_PASS)
-    page.click('button[type="submit"]')
-    page.wait_for_load_state("domcontentloaded", timeout=60_000)
-    page.wait_for_timeout(3_000)
-    _dismiss_chrome_dialogs(page)
-    log.info("Login complete — now at: %s", page.url)
-
-
-def ensure_logged_in_r365(page: Page, context) -> None:
-    """Navigate to R365; login only if the session has expired."""
-    page.goto(R365_URL, timeout=60_000, wait_until="domcontentloaded")
-    page.wait_for_timeout(3_000)
-    _dismiss_chrome_dialogs(page)
-
-    if "identity.restaurant365.com" in page.url or "login" in page.url.lower():
-        log.info("Not logged in — logging in now (first time or session expired)")
-        login_r365(page)
-    else:
-        log.info("Already logged in — at %s", page.url)
-
-
-# ─── Journal Entry form fill ──────────────────────────────────────────────────
+# ─── JE grid helpers ──────────────────────────────────────────────────────────
 
 def _find_je_table(frame):
-    """Return JS expression that resolves to the JE grid table element."""
     return frame.evaluate("""
         () => {
-            // Try by AngularJS directive container ID
             const byId = document.querySelector('#DSSJournalEntryGrid table[role="grid"]');
             if (byId) return 'id';
-            // Try by active cell reference
             const activeCell = document.getElementById('DSSJournalEntryGrid_active_cell');
             if (activeCell) return 'active-cell';
-            // Try aria attribute
             const byAria = document.querySelector('[aria-activedescendant*="DSSJournalEntryGrid"]');
             if (byAria) return 'aria';
             return 'none';
@@ -88,10 +35,6 @@ def _find_je_table(frame):
 
 
 def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bool:
-    """
-    Find the JE grid row by account name, click the debit(col2) or credit(col3)
-    cell to activate Kendo cell-level edit, then fill the named input.
-    """
     # col indices confirmed by DOM inspection: col2=debit, col3=credit
     col_idx = 3 if field_name == "credit" else 2
 
@@ -103,7 +46,6 @@ def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bo
                 const row = rows.find(r => {{
                     const tds = r.querySelectorAll('td');
                     if (tds.length < 4) return false;
-                    // Strip hidden <select> options so we match the display text, not all option texts
                     const clone = tds[1].cloneNode(true);
                     clone.querySelectorAll('select').forEach(s => s.remove());
                     return clone.textContent.trim().includes({repr(account_text)});
@@ -129,12 +71,14 @@ def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bo
             log.info("  Filled '%s' %s = %.2f", account_text, field_name, value)
             return True
 
-        # Debug: show what inputs ARE available
         inputs_debug = frame.evaluate(
             "() => Array.from(document.querySelectorAll('tr.k-grid-edit-row input'))"
             ".map(i => (i.name||'noname') + '=' + i.value).join(', ')"
         )
-        log.warning("  No input[name='%s'] for '%s' — edit-row inputs: %s", field_name, account_text, inputs_debug or "(none)")
+        log.warning(
+            "  No input[name='%s'] for '%s' — edit-row inputs: %s",
+            field_name, account_text, inputs_debug or "(none)",
+        )
         return False
     except Exception as e:
         log.warning("  Could not fill '%s' %s: %s", account_text, field_name, e)
@@ -192,13 +136,11 @@ def fill_journal_entry(active, revel_values: dict) -> None:
     log.info("Filling Journal Entry — values: %s", revel_values)
 
     def _fill(account, field, key):
-        """Match by substring of the exact account label shown in the DOM td."""
         val = revel_values.get(key) or 0
         if val:
             _fill_je_cell(je_frame, account, field, float(val))
 
-    # Account labels must match substrings of the exact td text in R365 DOM:
-    # e.g. "4000-01 - Food Sales", "4500-02 - Comps", etc.
+    # Account labels must match substrings of the exact td text in R365 DOM.
 
     # ── Credits ──────────────────────────────────────────────────────────────
     _fill("4000-01 - Food Sales",            "credit", "food_sales")
@@ -207,17 +149,17 @@ def fill_journal_entry(active, revel_values: dict) -> None:
     _fill("2240-000 - Sales Tax Payable",     "credit", "sales_tax")
 
     # ── Debits ───────────────────────────────────────────────────────────────
-    _fill("70250 - Credit Card Fees",         "credit", "credit_card_fees")
-    _fill("1200-000 - A/R Credit Cards Receivable", "debit", "credit_cards_ar")
-    _fill("1245-12 - A/R-UberEats",           "debit", "uber_eats")
-    _fill("1245-03 - A/R-DoorDash",           "debit", "doordash")
-    _fill("1245-08 - A/R-GrubHub",            "debit", "grubhub")
-    _fill("4500-01 - Discounts",              "debit", "item_discounts")
-    _fill("4500-02 - Comps",                  "debit", "comps")
-    _fill("5000-17 - Employee Discount",      "debit", "employee_discount")
-    _fill("4500-03 - Promotions",             "debit", "promotions")
+    _fill("70250 - Credit Card Fees",                   "credit", "credit_card_fees")
+    _fill("1200-000 - A/R Credit Cards Receivable",     "debit",  "credit_cards_ar")
+    _fill("1245-12 - A/R-UberEats",                     "debit",  "uber_eats")
+    _fill("1245-03 - A/R-DoorDash",                     "debit",  "doordash")
+    _fill("1245-08 - A/R-GrubHub",                      "debit",  "grubhub")
+    _fill("4500-01 - Discounts",                        "debit",  "item_discounts")
+    _fill("4500-02 - Comps",                            "debit",  "comps")
+    _fill("5000-17 - Employee Discount",                "debit",  "employee_discount")
+    _fill("4500-03 - Promotions",                       "debit",  "promotions")
     # 2301 Employee Tips Payable (first/editable row — debit)
-    _fill("2301 - Employee Tips Payable",     "debit", "employee_tips")
+    _fill("2301 - Employee Tips Payable",               "debit",  "employee_tips")
 
     # NOTE: 1255 - Undeposited Funds, 8000-06 - Cash Over/Short, and the
     # second 2301 - Employee Tips Payable row are read-only — R365 fills them.
@@ -228,9 +170,6 @@ def fill_journal_entry(active, revel_values: dict) -> None:
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
 
-DSS_URL = "https://ayg.restaurant365.com/react/sales-and-forecasting/legacy/DailySalesSummary"
-
-
 def go_to_daily_sales_summary(
     page: Page,
     target_date: date | None = None,
@@ -238,10 +177,6 @@ def go_to_daily_sales_summary(
     location_name: str | None = None,
     revel_values: dict | None = None,
 ) -> None:
-    """
-    Navigate directly to DSS, open the entity for target_date, open Journal Entry,
-    then fill in values from revel_values.
-    """
     log.info("Navigating directly to Daily Sales Summary...")
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
     page.wait_for_timeout(15_000)  # let legacy iframe fully settle
@@ -283,7 +218,6 @@ def go_to_daily_sales_summary(
             pages_before = len(context.pages) if context else 1
             entity.click()
 
-            # Wait for either a new tab OR same-tab navigation to the form
             active = None
             for _ in range(15):  # poll up to 15 seconds
                 page.wait_for_timeout(1_000)
@@ -306,7 +240,6 @@ def go_to_daily_sales_summary(
             active.screenshot(path="/tmp/r365_entity.png")
             active.wait_for_timeout(8_000)
 
-            # Click Journal Entry tab (Kendo UI: li[role="tab"] > span.k-link)
             log.info("Looking for Journal Entry tab...")
             found_je = False
             for frame in active.frames + [active]:
@@ -320,7 +253,6 @@ def go_to_daily_sales_summary(
                     active.screenshot(path="/tmp/r365_journal_entry.png")
                     found_je = True
 
-                    # Fill values from Revel if provided
                     if revel_values and found_je:
                         fill_journal_entry(active, revel_values)
 
@@ -348,7 +280,7 @@ def open_r365_journal_entry(
     revel_values: dict | None = None,
 ) -> dict:
     """
-    Launch a headed browser using a persistent profile (so login is remembered),
+    Launch a headless browser using a persistent profile (so login is remembered),
     navigate to the DSS entity for the given date/location, open Journal Entry,
     and fill in values from Revel.
     """
@@ -378,8 +310,6 @@ def open_r365_journal_entry(
         log.error("R365 navigation error: %s", exc)
         return {"error": str(exc)}
 
-
-# ─── CLI ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse

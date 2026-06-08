@@ -1,18 +1,13 @@
 """
-debug_je.py - Inspect JE grid DOM structure: where data rows live and what inputs they have
+debug_je.py — Inspect JE grid DOM structure: row layout and available inputs.
 """
-import os, logging
+import logging
 from datetime import date
-from dotenv import load_dotenv
+
 from playwright.sync_api import sync_playwright
 
-load_dotenv()
-
-R365_USER   = os.getenv("R65_USER")
-R365_PASS   = os.getenv("R65_PASS")
-R365_URL    = os.getenv("R365_URL", "https://ayg.restaurant365.com")
-PROFILE_DIR = os.path.expanduser("~/.r365_browser_profile")
-DSS_URL     = "https://ayg.restaurant365.com/react/sales-and-forecasting/legacy/DailySalesSummary"
+from r365.session import ensure_logged_in_r365, PROFILE_DIR
+from r365.journal_entry import DSS_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -26,17 +21,7 @@ with sync_playwright() as p:
     )
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
-    # Login if needed
-    page.goto(R365_URL, timeout=60_000, wait_until="domcontentloaded")
-    page.wait_for_timeout(3_000)
-    if "identity" in page.url or "login" in page.url.lower():
-        page.wait_for_selector("#Username", timeout=30_000)
-        page.fill("#Username", R365_USER)
-        page.fill("#Password", R365_PASS)
-        page.click('button[type="submit"]')
-        page.wait_for_load_state("domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(3_000)
-        log.info("Logged in")
+    ensure_logged_in_r365(page, ctx)
 
     # Navigate to DSS
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
@@ -58,7 +43,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(3_000)
 
     pages_before = len(ctx.pages)
-    entity = dss_frame.locator(f'table tbody tr:has(td:nth-child(3):has-text("{LOCATION}")) td:nth-child(5)').first
+    entity = dss_frame.locator(
+        f'table tbody tr:has(td:nth-child(3):has-text("{LOCATION}")) td:nth-child(5)'
+    ).first
     entity.wait_for(timeout=15_000)
     entity.click()
 
@@ -89,7 +76,7 @@ with sync_playwright() as p:
 
     active.wait_for_timeout(3_000)
 
-    # ── INSPECT #DSSJournalEntryGrid ──────────────────────────────────
+    # ── INSPECT #DSSJournalEntryGrid ─────────────────────────────────────────
     log.info("=" * 60)
     info = active.evaluate("""
         () => {
@@ -104,7 +91,6 @@ with sync_playwright() as p:
                 totalRoleRows: allRows.length,
                 tbodyRoleRows: tbodyRows.length,
                 theadRoleRows: theadRows.length,
-                // Sample first 3 rows: td count + first input values
                 rowSamples: Array.from(allRows).slice(0,5).map((r,i) => {
                     const tds = r.querySelectorAll('td');
                     const inputs = r.querySelectorAll('input');
@@ -117,7 +103,7 @@ with sync_playwright() as p:
     """)
     log.info("DSSJournalEntryGrid structure: %s", info)
 
-    # ── FIND ROWS WITH ACCOUNT NAMES (whole document) ─────────────────
+    # ── FIND ROWS WITH ACCOUNT NAMES (whole document) ─────────────────────────
     log.info("=" * 60)
     account_rows = active.evaluate("""
         () => {
@@ -126,17 +112,13 @@ with sync_playwright() as p:
             return Array.from(allRows).map((r, idx) => {
                 const tds = r.querySelectorAll('td');
                 if (tds.length < 2) return null;
-                // Strip select options from col1 textContent
                 const clone = tds[1].cloneNode(true);
                 clone.querySelectorAll('select').forEach(s => s.remove());
                 const col1text = clone.textContent.trim();
                 const matched = accounts.find(a => col1text.includes(a));
                 if (!matched) return null;
-                // Is this row inside #DSSJournalEntryGrid?
                 const inGrid = !!r.closest('#DSSJournalEntryGrid');
-                // What inputs does col1 have?
                 const col1inputs = Array.from(tds[1].querySelectorAll('input')).map(i => i.name + '=' + i.value.substring(0,15));
-                // What container is this row in?
                 const container = r.closest('[id]') ? r.closest('[id]').id : 'no-id-parent';
                 return {idx, matched, inGrid, container, col1text: col1text.substring(0,30), col1inputs, tdCount: tds.length};
             }).filter(Boolean);
@@ -144,12 +126,11 @@ with sync_playwright() as p:
     """)
     log.info("Account rows found: %s", account_rows)
 
-    # ── INSPECT DATA ROW (click Sales Tax Payable row and see inputs) ──
+    # ── INSPECT DATA ROW (click Sales Tax Payable and see edit inputs) ────────
     log.info("=" * 60)
-    log.info("Clicking Sales Tax Payable row col2 (debit) to see edit inputs...")
+    log.info("Clicking Sales Tax Payable row col3 (credit) to see edit inputs...")
     click_result = active.evaluate("""
         () => {
-            // Find ALL rows (whole doc), look for Sales Tax Payable in col1 (stripped)
             const rows = Array.from(document.querySelectorAll('tr[role="row"]'));
             for (const r of rows) {
                 const tds = r.querySelectorAll('td');
@@ -157,7 +138,6 @@ with sync_playwright() as p:
                 const clone = tds[1].cloneNode(true);
                 clone.querySelectorAll('select').forEach(s => s.remove());
                 if (clone.textContent.trim().includes('Sales Tax Payable')) {
-                    // Click col3 (credit)
                     const creditCell = tds[3];
                     creditCell.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
                     return 'clicked credit cell, row has ' + tds.length + ' cols, col1=' + clone.textContent.trim().substring(0,30);
@@ -169,13 +149,10 @@ with sync_playwright() as p:
     log.info("Click result: %s", click_result)
     active.wait_for_timeout(1_500)
 
-    # What inputs appeared?
     inputs_after = active.evaluate("""
         () => {
-            // Look specifically in k-grid-edit-row
             const editRow = document.querySelector('tr.k-grid-edit-row');
             if (!editRow) {
-                // Fallback: all inputs in any row that just got inputs
                 return 'no k-grid-edit-row; all inputs: ' +
                     Array.from(document.querySelectorAll('tr input[type="text"]'))
                         .filter(i => !i.readOnly && !i.disabled)
