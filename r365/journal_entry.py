@@ -177,7 +177,8 @@ def go_to_daily_sales_summary(
     context=None,
     location_name: str | None = None,
     revel_values: dict | None = None,
-    screenshot_path: str = "/tmp/r365_je_filled.png",
+    screenshot_path: str = "/tmp/r365_je_after.png",
+    before_screenshot_path: str = "/tmp/r365_je_before.png",
 ) -> None:
     log.info("Navigating directly to Daily Sales Summary...")
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
@@ -252,7 +253,7 @@ def go_to_daily_sales_summary(
                     je.click()
                     active.wait_for_timeout(5_000)
                     log.info("Journal Entry tab clicked — frame: %s", frame.url)
-                    active.screenshot(path="/tmp/r365_journal_entry.png")
+                    active.screenshot(path=before_screenshot_path)
                     found_je = True
 
                     if revel_values and found_je:
@@ -293,8 +294,8 @@ def open_r365_journal_entry(
 
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", location_name or "unknown")
     date_str = target_date.strftime("%Y-%m-%d") if target_date else "nodate"
-    screenshot_filename = f"r365_je_{safe_name}_{date_str}.png"
-    screenshot_path = f"/tmp/{screenshot_filename}"
+    before_filename = f"r365_je_{safe_name}_{date_str}_before.png"
+    after_filename  = f"r365_je_{safe_name}_{date_str}_after.png"
 
     try:
         with sync_playwright() as p:
@@ -309,12 +310,18 @@ def open_r365_journal_entry(
             ensure_logged_in_r365(page, context)
             go_to_daily_sales_summary(
                 page, target_date, context, location_name, revel_values,
-                screenshot_path=screenshot_path,
+                screenshot_path=f"/tmp/{after_filename}",
+                before_screenshot_path=f"/tmp/{before_filename}",
             )
 
             active_pages = context.pages
             url = active_pages[-1].url if active_pages else DSS_URL
-            return {"status": "ok", "url": url, "screenshot_filename": screenshot_filename}
+            return {
+                "status": "ok",
+                "url": url,
+                "before_screenshot_filename": before_filename,
+                "screenshot_filename": after_filename,
+            }
 
     except Exception as exc:
         log.error("R365 navigation error: %s", exc)

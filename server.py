@@ -255,13 +255,15 @@ def r365_reconcile_all():
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                      "status": "error", "error": result["error"]})
                 else:
-                    fname = result.get("screenshot_filename")
+                    before = result.get("before_screenshot_filename")
+                    after  = result.get("screenshot_filename")
                     event_queue.put({
                         "type": "r365_progress",
                         "establishment_id": est_id,
                         "status": "success",
                         "r365_url": result.get("url"),
-                        "screenshot_url": f"/screenshots/{fname}" if fname else None,
+                        "before_screenshot_url": f"/screenshots/{before}" if before else None,
+                        "screenshot_url": f"/screenshots/{after}" if after else None,
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)

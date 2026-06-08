@@ -932,8 +932,9 @@
       updateStats();
       const name = EST_NAMES[p.establishment_id] || `est=${p.establishment_id}`;
       let extra = '';
-      if (p.r365_url)      extra += ` <a href="${p.r365_url}" target="_blank" rel="noopener" class="log-link">Open in R365</a>`;
-      if (p.screenshot_url) extra += ` <a href="${p.screenshot_url}" target="_blank" class="log-link">Screenshot</a>`;
+      if (p.r365_url)              extra += ` <a href="${p.r365_url}" target="_blank" rel="noopener" class="log-link">Open in R365</a>`;
+      if (p.before_screenshot_url) extra += ` <a href="${p.before_screenshot_url}" target="_blank" class="log-link">Before</a>`;
+      if (p.screenshot_url)        extra += ` <a href="${p.screenshot_url}" target="_blank" class="log-link">After</a>`;
       addLog(`R365 JE ${name} → ${p.status}${p.error ? ": " + p.error : ""}`, extra);
     }
     if (type === "r365_done")  addLog("All journal entries posted. Reconciliation complete.");
