@@ -86,6 +86,34 @@ def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bo
         return False
 
 
+def _read_je_cell_value(frame, account_text: str, col: str) -> float:
+    """Read the current debit or credit value from a JE row by account text."""
+    col_idx = 3 if col == "credit" else 2
+    try:
+        val = frame.evaluate(f"""
+            (() => {{
+                const scope = document.querySelector('#DSSJournalEntryGrid') || document;
+                const rows = Array.from(scope.querySelectorAll('tr[role="row"]'));
+                const row = rows.find(r => {{
+                    const tds = r.querySelectorAll('td');
+                    if (tds.length < 4) return false;
+                    const clone = tds[1].cloneNode(true);
+                    clone.querySelectorAll('select').forEach(s => s.remove());
+                    return clone.textContent.trim().includes({repr(account_text)});
+                }});
+                if (!row) return null;
+                const cell = row.querySelectorAll('td')[{col_idx}];
+                if (!cell) return null;
+                const text = cell.textContent.replace(/[^0-9.-]/g, '').trim();
+                return text ? parseFloat(text) : 0;
+            }})()
+        """)
+        return round(float(val or 0), 2)
+    except Exception as e:
+        log.warning("Could not read '%s' %s: %s", account_text, col, e)
+        return 0.0
+
+
 def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png") -> None:
     """
     Fill R365 Journal Entry from Revel data.
@@ -134,6 +162,25 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     except Exception as e:
         log.warning("JE grid rows not detected within 15s: %s", e)
 
+    # ── Read pre-filled values from R365 before writing ─────────────────────
+    # Promotions (4500-03) is pre-filled by R365 — read it and use it to
+    # compute the correct 4500-01 Discounts remainder instead of overwriting it.
+    r365_promotions = _read_je_cell_value(je_frame, "4500-03 - Promotions", "debit")
+    log.info("R365 pre-filled Promotions (4500-03): %.2f", r365_promotions)
+
+    # Recalculate item_discounts using the actual R365 promotions value
+    revel_discounts_total = revel_values.get("revel_discounts_total", 0.0)
+    employee_discount     = revel_values.get("employee_discount", 0.0)
+    comps                 = revel_values.get("comps", 0.0)
+    app_reward            = revel_values.get("app_reward", 0.0)
+    item_discounts = round(max(
+        revel_discounts_total - employee_discount - comps - r365_promotions - app_reward, 0.0
+    ), 2)
+    log.info(
+        "item_discounts = %.2f - %.2f - %.2f - %.2f (r365 promotions) - %.2f = %.2f",
+        revel_discounts_total, employee_discount, comps, r365_promotions, app_reward, item_discounts
+    )
+
     log.info("Filling Journal Entry — values: %s", revel_values)
 
     def _fill(account, field, key):
@@ -155,10 +202,11 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     _fill("1245-12 - A/R-UberEats",                     "debit",  "uber_eats")
     _fill("1245-03 - A/R-DoorDash",                     "debit",  "doordash")
     _fill("1245-08 - A/R-GrubHub",                      "debit",  "grubhub")
-    _fill("4500-01 - Discounts",                        "debit",  "item_discounts")
+    if item_discounts:
+        _fill_je_cell(je_frame, "4500-01 - Discounts", "debit", item_discounts)
     _fill("4500-02 - Comps",                            "debit",  "comps")
     _fill("5000-17 - Employee Discount",                "debit",  "employee_discount")
-    _fill("4500-03 - Promotions",                       "debit",  "promotions")
+    # 4500-03 Promotions — NOT written, R365 pre-fills it correctly
     # 2301 Employee Tips Payable (first/editable row — debit)
     _fill("2301 - Employee Tips Payable",               "debit",  "employee_tips")
 
