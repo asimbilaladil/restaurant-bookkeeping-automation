@@ -163,10 +163,10 @@ All mappings are derived from live DOM inspection of the R365 Journal Entry grid
 | 1245-03 - A/R-DoorDash | `custom_payments[Door Dash + DD Marketplace].total` (summed) | ✅ Confirmed |
 | 1245-08 - A/R-GrubHub | `custom_payments[Grub Hub].total` | ✅ Confirmed |
 | 2301 - Employee Tips Payable (editable) | `sales_data.adj_total` | ✅ Confirmed |
-| 4500-02 - Comps | `discounts_data[Manager 100%]` | ⚠️ Unconfirmed |
-| 5000-17 - Employee Discount | `discounts_data[Employee $9.79 Off]` | ⚠️ Unconfirmed |
-| 4500-01 - Discounts | `discounts_data[Military/Police/Senior/Standard remainder]` | ⚠️ Unconfirmed |
-| 4500-03 - Promotions | `discounts_data[Loyalty meal promos]` | ⚠️ Unconfirmed |
+| 4500-02 - Comps | `discounts_data[Manager 100%]` | ✅ Confirmed |
+| 5000-17 - Employee Discount | `discounts_data[Employee $9.79 Off]` | ✅ Confirmed |
+| 4500-01 - Discounts | `standard_total + loyalty_total − employee_discount − comps − promotions − app_reward` | ✅ Confirmed |
+| 4500-03 - Promotions | `discounts_data[Free … meal reasons] + loyalty_total` | ✅ Confirmed |
 
 ### Read-only (auto-filled by R365, not touched)
 
@@ -175,8 +175,12 @@ All mappings are derived from live DOM inspection of the R365 Journal Entry grid
 | 1255 - Undeposited Funds | Auto-calculated from cash |
 | 8000-06 - Cash Over/Short | Auto-calculated from variance |
 | 2301 - Employee Tips Payable (2nd row) | Auto-calculated from tips_total |
+| App Reward row | Tracked internally but not written — R365 pre-fills this line |
 
-> **⚠️ Discount mappings are unconfirmed.** The code uses suspected reason→account rules based on discount reason names. These must be verified with the team before relying on automation for discount fields. See the `TODO` comment in `server.py` → `_extract_revel_values()`.
+**Discount mapping notes:**
+- **4500-01 Discounts** is computed as the remainder (`standard_total + loyalty_total − named buckets`), so new discount reasons (Police/Fire, Military, Senior, paid meal combos like "3 Finger Meal", etc.) land here automatically without code changes.
+- **4500-03 Promotions** only includes reasons starting with `"Free "` (free meal promos from the Loyalty group). Paid combo meals stay in 4500-01.
+- `App Reward` rows are skipped for R365 write since R365 auto-fills that line.
 
 ---
 
@@ -215,9 +219,13 @@ The Operations Report API (`/reports/operations/json/`) returns:
     }
   },
   "discounts_data": [
-    { "reason": "Employee $9.79 Off", "amount": 61.13 },
-    { "reason": "Manager 100%", "amount": 3.59 },
-    { "reason": "Free 3 Finger Meal - 1", "amount": 87.18, "is_total": false }
+    { "reason": "Employee $9.79 Off", "amount": 61.13, "is_total": false },
+    { "reason": "Manager 100%",        "amount": 3.59,  "is_total": false },
+    { "reason": "3 Finger Meal - 1",   "amount": 12.00, "is_total": false },
+    { "reason": "Free 3 Finger Meal - 1", "amount": 87.18, "is_total": false },
+    { "reason": "Standard",            "amount": 76.72, "is_total": true  },
+    { "reason": "Loyalty",             "amount": 87.18, "is_total": true  },
+    { "reason": "App Reward",          "amount": 5.00,  "is_total": false }
   ]
 }
 ```
@@ -332,4 +340,4 @@ Edit `TARGET_DATE` and `LOCATION` at the top of the file before running. Screens
 
 - Enter the date, Revel values, and R365 values in the yellow input cells
 - Variance column auto-calculates — turns **red** on mismatch, **green** if zero
-- Orange rows = discount fields awaiting mapping confirmation
+- Discount field mappings are now confirmed — orange rows can be treated as fully automated.
