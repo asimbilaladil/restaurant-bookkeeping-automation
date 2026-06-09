@@ -366,47 +366,75 @@ def _extract_revel_values(data: dict) -> dict:
     undeposited_funds = f(sd.get("cash_for_sales", 0))
 
     # ── Discounts ─────────────────────────────────────────────────────────────
-    # TODO: Confirm which Revel discount reasons map to each R365 account.
-    # Revel discounts_data reasons seen: "Employee $9.79 Off", "Manager 100%",
-    # "Military Discount", "Police/Fire in Uniform", "Senior Discount",
-    # "Remake <name>", "3 Finger Meal - 1", "5 Finger Meal - 1", "Free 3 Finger Meal - 1"
-    # Totals rows: "Standard" (is_total), "Loyalty" (is_total)
+    # Mapping rules (confirmed):
+    #   5000-17 Employee Discount  ← "Employee $9.79 Off"
+    #   4500-03 Promotions         ← any "Meal" reason (e.g. "Free 3 Finger Meal - 1",
+    #                                 "3 Finger Meal - 1", "Chicken Wrap Meal - 1", etc.)
+    #                                 and Loyalty total group
+    #   4500-02 Comps              ← "Manager 100%"
+    #   4500-01 Discounts          ← everything else (remainder: Standard group items
+    #                                 minus Employee Discount and Comps)
     #
-    # Suspected mapping (UNCONFIRMED — update when team confirms):
-    #   4500-02 Comps          ← "Manager 100%"
-    #   5000-17 Employee Disc  ← "Employee $9.79 Off"
-    #   4500-01 Discounts      ← "Military Discount", "Police/Fire in Uniform", "Senior Discount"
-    #   4500-03 Promotions     ← "Free 3 Finger Meal - 1", "3 Finger Meal - 1", "5 Finger Meal - 1"
-    #   " - " (manual row)     ← "Remake <name>" entries — entered manually, skip automation
+    # Strategy: use is_total rows as group subtotals to cross-check, but compute
+    # each bucket by summing individual (non-total) rows.
+    #
+    # 4500-01 Discounts = Standard_total - employee_discount - comps
+    # This ensures the three Standard-group rows always sum correctly even if
+    # new discount reasons are introduced, without requiring us to enumerate them.
     discounts_data = data.get("discounts_data") or []
 
-    COMPS_REASONS      = {"manager 100%"}
-    EMP_DISC_REASONS   = {"employee $9.79 off"}
-    PROMOTIONS_REASONS = {"free 3 finger meal - 1", "3 finger meal - 1", "5 finger meal - 1"}
-    # Everything else non-total, non-remake goes to Discounts
-    SKIP_REASONS       = {"remake"}  # partial match — manual entries
+    COMPS_REASONS    = {"manager 100%"}
+    EMP_DISC_REASONS = {"employee $9.79 off"}
 
-    comps = employee_discount = promotions = item_discounts = 0.0
+    def _is_promotion(reason_lower: str) -> bool:
+        """Only FREE meal promos (Loyalty group) → Promotions.
+        Paid meal combos like '3 Finger Meal - 1', 'Chicken Wrap Meal - 1' are
+        regular discounts and stay in the Standard group → 4500-01 Discounts."""
+        return reason_lower.startswith("free ")
+
+    # Collect group subtotals from is_total rows
+    standard_total = 0.0
+    loyalty_total  = 0.0
+    for row in discounts_data:
+        if not row.get("is_total"):
+            continue
+        reason = (row.get("reason") or "").strip().lower()
+        if reason == "standard":
+            standard_total = f(row.get("amount", 0))
+        elif reason == "loyalty":
+            loyalty_total = f(row.get("amount", 0))
+
+    # Sum known buckets from individual (non-total) rows
+    comps = employee_discount = promotions = app_reward = 0.0
     for row in discounts_data:
         if row.get("is_total"):
             continue
         reason = (row.get("reason") or "").strip().lower().split("\n")[0]
         amount = f(row.get("amount", 0))
-        if any(s in reason for s in SKIP_REASONS):
+        if "remake" in reason:
             continue  # manual entry, skip
         elif reason in COMPS_REASONS:
             comps += amount
         elif reason in EMP_DISC_REASONS:
             employee_discount += amount
-        elif reason in PROMOTIONS_REASONS:
+        elif _is_promotion(reason):
             promotions += amount
-        else:
-            item_discounts += amount
+        elif reason == "app reward":
+            app_reward += amount  # R365 pre-fills this row — track but don't write
 
     comps             = round(comps, 2)
     employee_discount = round(employee_discount, 2)
     promotions        = round(promotions, 2)
-    item_discounts    = round(item_discounts, 2)
+    app_reward        = round(app_reward, 2)
+
+    # 4500-01 Discounts = total Revel discounts − all named buckets − app_reward
+    # Using grand total (standard + loyalty) minus everything accounted for,
+    # so paid meal combos (3 Finger Meal, Chicken Wrap Meal, etc.) and
+    # Police/Fire, Military, Senior, etc. all land here automatically.
+    revel_discounts_total = round(standard_total + loyalty_total, 2)
+    item_discounts = round(max(
+        revel_discounts_total - employee_discount - comps - promotions - app_reward, 0.0
+    ), 2)
 
     # ── Employee Tips ─────────────────────────────────────────────────────────
     # The read-only 2301 row = tips_total (auto-filled by R365, e.g. 24.75) — skip
