@@ -311,6 +311,8 @@ def _extract_revel_values(data: dict) -> dict:
     sd = data.get("sales_data") or {}
     product_mix = data.get("product_mix_data") or []
     tax_data = data.get("tax_data") or []
+    log.info("sales_data keys: %s", sorted(sd.keys()))
+    log.info("sales_data adj/tip/fee fields: %s", {k: v for k, v in sd.items() if "adj" in k.lower() or "tip" in k.lower() or "fee" in k.lower()})
 
     def f(v):
         """Safe float conversion."""
@@ -407,9 +409,8 @@ def _extract_revel_values(data: dict) -> dict:
     item_discounts    = round(item_discounts, 2)
 
     # ── Employee Tips ─────────────────────────────────────────────────────────
-    # The editable 2301 row = adj_total (tip adjustment debit, e.g. 0.74)
     # The read-only 2301 row = tips_total (auto-filled by R365, e.g. 24.75) — skip
-    employee_tips = f(sd.get("adj_total", 0))
+    employee_tips = f(sd.get("adj_credit_tips", 0))
 
     # ── Cash Over/Short variance ──────────────────────────────────────────────
     # net_account_for = what Revel says should have been collected
@@ -422,7 +423,7 @@ def _extract_revel_values(data: dict) -> dict:
     cash_over_short_sign = "credit" if raw_variance < 0 else "debit"
 
     return {
-        "credit_card_fees":     f(sd.get("adj_total", 0)),   # credit card tip adjustment
+        "credit_card_fees":     f(sd.get("adj_credit_tips", 0)),
         "food_sales":           food_sales,
         "beverage_sales":       beverage_sales,
         "delivery_food_sales":  delivery_sales,

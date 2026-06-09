@@ -27,22 +27,50 @@ def build_date_range(start_date: date) -> tuple[str, str]:
     return range_from, range_to
 
 
+def _switch_establishment(context: BrowserContext, establishment_id: int) -> None:
+    csrftoken = next(
+        (c["value"] for c in context.cookies() if c["name"] == "csrftoken"), ""
+    )
+    resp = context.request.post(
+        f"{BASE_URL}/navigation/load_establishment_tree/",
+        form={
+            "establishments": str(establishment_id),
+            "establishment":  str(establishment_id),
+            "node_type":      "1",
+            "node_id":        str(establishment_id),
+            "location":       "/reports/operations/",
+        },
+        headers={"X-CSRFToken": csrftoken, "Referer": f"{BASE_URL}/dashboard/"},
+    )
+    if resp.status != 200:
+        raise RuntimeError(f"Switch to est={establishment_id} failed: HTTP {resp.status}")
+    result = resp.json()
+    if result.get("errors"):
+        raise RuntimeError(f"Switch to est={establishment_id} errors: {result['errors']}")
+    log.info("  Switched session to est=%d", establishment_id)
+
+
 def fetch_establishment_report(
     context: BrowserContext,
     establishment_id: int,
     start_date: date,
 ) -> dict:
+    _switch_establishment(context, establishment_id)
     range_from, range_to = build_date_range(start_date)
     log.info("  Fetching est=%d  %s → %s", establishment_id, range_from, range_to)
 
     resp = context.request.get(
         f"{BASE_URL}/reports/operations/json/",
         params={
-            "establishment":  establishment_id,
-            "range_from":     range_from,
-            "range_to":       range_to,
-            "show_unpaid":    1,
-            "show_irregular": 1,
+            "establishment":       establishment_id,
+            "employee":            "",
+            "online_app":          "",
+            "online_app_type":     "",
+            "online_app_platform": "",
+            "show_unpaid":         1,
+            "show_irregular":      1,
+            "range_from":          range_from,
+            "range_to":            range_to,
         },
     )
 
