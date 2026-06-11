@@ -196,11 +196,24 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     # ── Discount reconciliation ───────────────────────────────────────────────
     # Strategy:
-    # 1. Write employee discount and comps first (we own these)
-    # 2. Wait for R365 to settle
-    # 3. Read ALL R365 discount rows (includes pre-filled Promotions, Gift Card, etc.)
-    # 4. Sum and compare to Revel total
-    # 5. If variance → write remainder to plain 4500-01 row
+    # 1. Write employee discount and comps first (we own these) and wait to settle
+    # 2. THEN read ALL R365 discount rows (now includes our written values)
+    # 3. Sum and compare to Revel total
+    # 4. If variance → write remainder to plain 4500-01 row
+
+    # Step 1: Write emp/comps and wait for R365 to reflect them
+    _reconcile("4500-02 - Comps",             "debit", revel_values.get("comps"))
+    _reconcile("5000-17 - Employee Discount", "debit", revel_values.get("employee_discount"))
+    emp_disc_target = round(float(revel_values.get("employee_discount") or 0), 2)
+    for _ in range(20):  # poll up to 10s
+        je_frame.wait_for_timeout(500)
+        current = _read_je_cell_value(je_frame, "5000-17 - Employee Discount", "debit")
+        if current == emp_disc_target:
+            log.info("✅ Employee Discount settled at %.2f", current)
+            break
+        log.info("Waiting for Employee Discount to settle: current=%.2f target=%.2f", current, emp_disc_target)
+    else:
+        log.warning("Employee Discount did not settle to %.2f after 10s", emp_disc_target)
 
     revel_discounts_total = revel_values.get("revel_discounts_total", 0.0)
     revel_discounts_data  = revel_values.get("discounts_data", [])
@@ -292,25 +305,6 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             "⚠️  Discount variance %.2f → updating 4500-01 from %.2f to %.2f",
             discount_variance, plain_4500_01_value, item_discounts
         )
-
-    # ── Write employee discount and comps BEFORE reading discount totals ─────
-    # These are our values — write them first so the subsequent R365 read
-    # captures the correct totals for Promotions and other pre-filled rows.
-    _reconcile("4500-02 - Comps",             "debit", revel_values.get("comps"))
-    _reconcile("5000-17 - Employee Discount", "debit", revel_values.get("employee_discount"))
-
-    # Wait until R365 shows our written employee_discount value before reading totals.
-    # A fixed sleep isn't reliable — poll until the cell reflects what we wrote.
-    emp_disc_target = round(float(revel_values.get("employee_discount") or 0), 2)
-    for _ in range(20):  # up to 10s
-        je_frame.wait_for_timeout(500)
-        current = _read_je_cell_value(je_frame, "5000-17 - Employee Discount", "debit")
-        if current == emp_disc_target:
-            log.info("✅ Employee Discount settled at %.2f — proceeding with discount read", current)
-            break
-        log.info("Waiting for Employee Discount to settle: current=%.2f target=%.2f", current, emp_disc_target)
-    else:
-        log.warning("Employee Discount did not settle to %.2f after 10s — proceeding anyway", emp_disc_target)
 
     log.info("Filling Journal Entry — values: %s", revel_values)
 
