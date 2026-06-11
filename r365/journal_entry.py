@@ -196,10 +196,11 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     # ── Discount reconciliation ───────────────────────────────────────────────
     # Strategy:
-    # 1. Read ALL R365 discount rows (4500-01 all, 4500-02, 4500-03, 5000-17)
-    # 2. Sum them and compare to Revel total
-    # 3. If match → write nothing to discount fields
-    # 4. If variance → add variance to the plain 4500-01 row only
+    # 1. Write employee discount and comps first (we own these)
+    # 2. Wait for R365 to settle
+    # 3. Read ALL R365 discount rows (includes pre-filled Promotions, Gift Card, etc.)
+    # 4. Sum and compare to Revel total
+    # 5. If variance → write remainder to plain 4500-01 row
 
     revel_discounts_total = revel_values.get("revel_discounts_total", 0.0)
     revel_discounts_data  = revel_values.get("discounts_data", [])
@@ -292,6 +293,13 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             discount_variance, plain_4500_01_value, item_discounts
         )
 
+    # ── Write employee discount and comps BEFORE reading discount totals ─────
+    # These are our values — write them first so the subsequent R365 read
+    # captures the correct totals for Promotions and other pre-filled rows.
+    _reconcile("4500-02 - Comps",          "debit", revel_values.get("comps"))
+    _reconcile("5000-17 - Employee Discount", "debit", revel_values.get("employee_discount"))
+    je_frame.wait_for_timeout(1000)  # let R365 settle before reading
+
     log.info("Filling Journal Entry — values: %s", revel_values)
 
     # ── Credits ──────────────────────────────────────────────────────────────
@@ -349,9 +357,8 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             _fill_je_cell(je_frame, "4500-01 - Discounts", "debit", item_discounts, no_comment=True)
         else:
             log.info("  MATCH    %-45s debit = %.2f (no write needed)", "4500-01 - Discounts", r365_plain)
-    _reconcile("4500-02 - Comps",                           "debit",  revel_values.get("comps"))
-    _reconcile("5000-17 - Employee Discount",               "debit",  revel_values.get("employee_discount"))
-    # 4500-03 Promotions — R365 pre-fills, verified above but not written
+    # 4500-02 Comps and 5000-17 Employee Discount already written above (before discount read)
+    # 4500-03 Promotions — R365 pre-fills, not written by us
     _reconcile("2301 - Employee Tips Payable",              "debit",  revel_values.get("employee_tips"))
 
     # ── Cash Over/Short ───────────────────────────────────────────────────────
