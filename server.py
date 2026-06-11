@@ -425,6 +425,10 @@ def _extract_revel_values(data: dict) -> dict:
     # All Loyalty group items are promos regardless of reason name.
     promotions = loyalty_total
 
+    # Grand total of all Revel discounts (Standard + Loyalty).
+    # journal_entry.py subtracts individual buckets + R365 promotions to get the remainder.
+    revel_discounts_total = round(standard_total + loyalty_total, 2)
+
     # 4500-01 Discounts = Standard total − employee_discount − comps − app_reward
     # Everything else in Standard (Police/Fire, Senior, No drink, DSP, meal combos, etc.)
     item_discounts = round(max(standard_total - employee_discount - comps - app_reward, 0.0), 2)
