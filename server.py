@@ -331,6 +331,24 @@ def _extract_revel_values(data: dict) -> dict:
     beverage_sales  = f(class_map.get("2. Beverage", {}).get("price", 0))
     delivery_sales  = f(class_map.get("5. Delivery - Food", {}).get("price", 0))
 
+    # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
+    # If negative: add abs(val) to food_sales, debit 4000-011 tax-exempt row
+    # If positive: subtract val from food_sales, credit 4000-011 tax-exempt row
+    net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
+    if net_sales_untaxed < 0:
+        # Negative: food_sales credit increases, tax-exempt row is a debit
+        food_sales = round(food_sales + abs(net_sales_untaxed), 2)
+        tax_exempt_field   = "debit"
+        tax_exempt_amount  = abs(net_sales_untaxed)
+    elif net_sales_untaxed > 0:
+        # Positive: food_sales credit decreases, tax-exempt row is a credit
+        food_sales = round(food_sales - net_sales_untaxed, 2)
+        tax_exempt_field   = "credit"
+        tax_exempt_amount  = net_sales_untaxed
+    else:
+        tax_exempt_field   = None
+        tax_exempt_amount  = 0.0
+
     # ── Tax ───────────────────────────────────────────────────────────────────
     tax_total = 0.0
     for row in tax_data:
@@ -450,6 +468,8 @@ def _extract_revel_values(data: dict) -> dict:
     return {
         "credit_card_fees":     f(sd.get("adj_credit_tips", 0)),
         "food_sales":           food_sales,
+        "tax_exempt_field":     tax_exempt_field,
+        "tax_exempt_amount":    tax_exempt_amount,
         "beverage_sales":       beverage_sales,
         "delivery_food_sales":  delivery_sales,
         "sales_tax":            tax_total,

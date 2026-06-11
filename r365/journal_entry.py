@@ -286,6 +286,42 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     # ── Credits ──────────────────────────────────────────────────────────────
     _reconcile("4000-01 - Food Sales",           "credit", revel_values.get("food_sales"))
+
+    # ── Untaxed Food Sales (4000-011) ─────────────────────────────────────────
+    # Add a new row via the Select Account box if net_sales_untaxed != 0
+    tax_exempt_field  = revel_values.get("tax_exempt_field")
+    tax_exempt_amount = revel_values.get("tax_exempt_amount", 0.0)
+    if tax_exempt_field and tax_exempt_amount:
+        try:
+            # Check if row already exists
+            existing = _read_je_cell_value(je_frame, "4000-011", tax_exempt_field)
+            if existing == round(tax_exempt_amount, 2):
+                log.info("✅ 4000-011 Food Sales-tax exempt already correct: %.2f", tax_exempt_amount)
+            else:
+                log.info("Adding 4000-011 Food Sales-tax exempt: %.2f (%s)", tax_exempt_amount, tax_exempt_field)
+                # Type account into Select Account combobox
+                acct_input = je_frame.locator('.k-combobox input, input[placeholder="Select Account"]').first
+                acct_input.click()
+                acct_input.fill("4000-011")
+                je_frame.wait_for_timeout(1000)
+                je_frame.locator('.k-list-container li, .k-popup li').first.click()
+                je_frame.wait_for_timeout(500)
+                # Fill the debit or credit amount
+                amt_input = je_frame.locator(f'input[name="{tax_exempt_field}"]').first
+                amt_input.fill(f"{tax_exempt_amount:.2f}")
+                je_frame.wait_for_timeout(300)
+                # Fill comment
+                comment_input = je_frame.locator('input[name="comment"]').first
+                if comment_input.count() > 0:
+                    comment_input.fill("Untaxed Net Sales")
+                    je_frame.wait_for_timeout(300)
+                # Click Add
+                je_frame.locator('button:has-text("Add"), [ng-click*="add"], .k-grid-add').first.click()
+                je_frame.wait_for_timeout(1000)
+                log.info("✅ 4000-011 row added: %.2f %s 'Untaxed Net Sales'", tax_exempt_amount, tax_exempt_field)
+        except Exception as e:
+            log.warning("Could not add 4000-011 tax-exempt row: %s", e)
+
     _reconcile("4000-02 - Beverage Sales",        "credit", revel_values.get("beverage_sales"))
     _reconcile("4000-08 - Food Delivery Sales",   "credit", revel_values.get("delivery_food_sales"))
     _reconcile("2240-000 - Sales Tax Payable",    "credit", revel_values.get("sales_tax"))
