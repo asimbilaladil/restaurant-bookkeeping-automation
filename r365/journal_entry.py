@@ -346,6 +346,21 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             except Exception as e:
                 log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
 
+    # Save the DSS form — use :visible to skip hidden modal/theme Save buttons
+    try:
+        all_save = active.locator('button:has-text("Save")')
+        for i in range(all_save.count()):
+            btn = all_save.nth(i)
+            log.info("Save btn[%d]: visible=%s disabled=%s ng-click=%s class=%s",
+                     i, btn.is_visible(), btn.get_attribute("disabled"),
+                     btn.get_attribute("ng-click"), btn.get_attribute("class"))
+        save_btn = active.locator('button:visible:has-text("Save"):not([disabled])').first
+        save_btn.click(timeout=10_000)
+        active.wait_for_timeout(2000)
+        log.info("DSS form saved")
+    except Exception as e:
+        log.warning("Could not click Save: %s", e)
+
     active.screenshot(path=screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
