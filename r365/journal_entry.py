@@ -355,49 +355,10 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     _reconcile("2301 - Employee Tips Payable",              "debit",  revel_values.get("employee_tips"))
 
     # ── Cash Over/Short ───────────────────────────────────────────────────────
-    # Formula: Net To Account For − Grand Total (Payments) = variance
-    # If positive → credit 8000-06; if negative → debit 8000-06
-    # Only add if not already present in the JE grid.
-    cash_over_short      = revel_values.get("cash_over_short", 0.0)
-    cash_over_short_sign = revel_values.get("cash_over_short_sign", "credit")
-
-    if cash_over_short and cash_over_short > 0:
-        # Check if 8000-06 row already exists
-        existing_cos = _read_je_cell_value(je_frame, "8000-06", cash_over_short_sign)
-        if existing_cos == cash_over_short:
-            log.info("✅ 8000-06 Cash Over/Short already correct: %.2f", cash_over_short)
-        else:
-            log.info("Adding 8000-06 Cash Over/Short: %.2f (%s)", cash_over_short, cash_over_short_sign)
-            try:
-                # Select account in the add-row combobox
-                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
-                acct_input.scroll_into_view_if_needed()
-                acct_input.click()
-                acct_input.fill("8000-06")
-                je_frame.wait_for_timeout(1200)
-                # Press Enter — the filtered match is already highlighted, no ArrowDown needed
-                acct_input.press("Enter")
-                je_frame.wait_for_timeout(500)
-
-                # Tab to Debit, then Credit if this is a credit entry
-                acct_input.press("Tab")           # → Debit field
-                if cash_over_short_sign == "credit":
-                    active.keyboard.press("Tab")  # → Credit field
-                active.keyboard.type(f"{cash_over_short:.2f}")
-                je_frame.wait_for_timeout(300)
-
-                # Tab to Comment field and fill "variance"
-                active.keyboard.press("Tab")
-                active.keyboard.type("variance")
-                je_frame.wait_for_timeout(300)
-
-                # Click Add button — scoped to grid toolbar to avoid matching "Add Comment"
-                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
-                je_frame.wait_for_timeout(1000)
-                log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'variance'",
-                         cash_over_short, cash_over_short_sign)
-            except Exception as e:
-                log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
+    # 8000-06 is read-only — R365 auto-calculates it from the JE balance.
+    # We do NOT write to it. Once all other fields are correct the difference
+    # will be zero and R365 will show the correct Cash Over/Short automatically.
+    log.info("Skipping 8000-06 Cash Over/Short — R365 auto-calculates this field")
 
     active.screenshot(path=screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)

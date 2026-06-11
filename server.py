@@ -397,7 +397,9 @@ def _extract_revel_values(data: dict) -> dict:
     discounts_data = data.get("discounts_data") or []
 
     COMPS_REASONS    = {"manager 100%"}
-    EMP_DISC_REASONS = {"employee $9.79 off"}
+    # Match any reason starting with "employee" — covers "$9.79 Off", "50%", bare "Employee", etc.
+    def _is_employee_discount(reason_lower: str) -> bool:
+        return reason_lower.startswith("employee")
 
     # Collect group subtotals from is_total rows.
     # Promotions (4500-03) = loyalty_total directly — the Loyalty group contains
@@ -425,7 +427,7 @@ def _extract_revel_values(data: dict) -> dict:
             continue  # manual entry, skip
         elif reason in COMPS_REASONS:
             comps += amount
-        elif reason in EMP_DISC_REASONS:
+        elif _is_employee_discount(reason):
             employee_discount += amount
         elif reason == "app reward":
             app_reward += amount  # R365 pre-fills this row — track but don't write
