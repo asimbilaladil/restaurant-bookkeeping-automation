@@ -316,30 +316,27 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
         else:
             log.info("Adding 8000-06 Cash Over/Short: %.2f (%s)", cash_over_short, cash_over_short_sign)
             try:
-                # Use the Add row at the top of the JE grid
-                # Select account in the dropdown
-                acct_input = je_frame.locator('input[placeholder="Select Account"], .k-combobox input').first
+                # Select account in the add-row combobox
+                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
+                acct_input.scroll_into_view_if_needed()
                 acct_input.click()
                 acct_input.fill("8000-06")
-                je_frame.wait_for_timeout(1000)
-                # Pick first dropdown option
-                je_frame.locator('.k-list-container li, .k-popup li').first.click()
+                je_frame.wait_for_timeout(1200)
+                # Press Enter — the filtered match is already highlighted, no ArrowDown needed
+                acct_input.press("Enter")
                 je_frame.wait_for_timeout(500)
 
-                # Fill debit or credit amount
-                col = "credit" if cash_over_short_sign == "credit" else "debit"
-                amt_input = je_frame.locator(f'input[name="{col}"]').first
-                if amt_input.count() == 0:
-                    # Try by position in the add row
-                    amt_input = je_frame.locator('.k-grid-toolbar input').nth(1 if col == "debit" else 2)
-                amt_input.fill(f"{cash_over_short:.2f}")
+                # Tab to Debit, then Credit if this is a credit entry
+                acct_input.press("Tab")           # → Debit field
+                if cash_over_short_sign == "credit":
+                    active.keyboard.press("Tab")  # → Credit field
+                active.keyboard.type(f"{cash_over_short:.2f}")
                 je_frame.wait_for_timeout(300)
 
-                # Fill comment "variance"
-                comment_input = je_frame.locator('input[name="comment"], input[placeholder*="omment"]').first
-                if comment_input.count() > 0:
-                    comment_input.fill("variance")
-                    je_frame.wait_for_timeout(300)
+                # Tab to Comment field and fill "variance"
+                active.keyboard.press("Tab")
+                active.keyboard.type("variance")
+                je_frame.wait_for_timeout(300)
 
                 # Click Add button
                 je_frame.locator('button:has-text("Add"), input[value="Add"]').first.click()
