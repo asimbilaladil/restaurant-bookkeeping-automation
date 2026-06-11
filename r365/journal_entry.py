@@ -346,41 +346,22 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             except Exception as e:
                 log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
 
-    # Save the DSS form — use :visible to skip hidden modal/theme Save buttons
-    try:
-        all_save = active.locator('button:has-text("Save")')
-        for i in range(all_save.count()):
-            btn = all_save.nth(i)
-            log.info("Save btn[%d]: visible=%s disabled=%s ng-click=%s class=%s",
-                     i, btn.is_visible(), btn.get_attribute("disabled"),
-                     btn.get_attribute("ng-click"), btn.get_attribute("class"))
-        save_btn = active.locator('button:visible:has-text("Save"):not([disabled])').first
-        save_btn.click(timeout=10_000)
-        active.wait_for_timeout(2000)
-        log.info("DSS form saved")
-    except Exception as e:
-        log.warning("Could not click Save: %s", e)
-
     active.screenshot(path=screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
-    # ── Save ─────────────────────────────────────────────────────────────────
-    # The Save toolbar is an Angular ng-click on a <li data-testid="saveMenuItem">
-    # — not a real <button>. We must trigger the Angular handler via JavaScript.
+    # Save the DSS form — Save toolbar is a <li data-testid="saveMenuItem">, not a <button>
     try:
         saved = active.evaluate("""
             () => {
-                // Find the saveMenuItem li and fire ng-click via angular scope
                 const el = document.querySelector('[data-testid="saveMenuItem"]');
                 if (!el) return 'saveMenuItem not found';
-                // Fire the ng-click handler directly
                 el.click();
                 return 'clicked';
             }
         """)
         log.info("Save JS click result: %s", saved)
         active.wait_for_timeout(3_000)
-        log.info("✅ Saved via JS ng-click")
+        log.info("DSS form saved")
     except Exception as e:
         log.warning("Save failed: %s", e)
 
