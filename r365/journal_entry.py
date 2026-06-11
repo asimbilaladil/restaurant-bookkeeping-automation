@@ -162,53 +162,144 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     except Exception as e:
         log.warning("JE grid rows not detected within 15s: %s", e)
 
-    # ── Read pre-filled values from R365 before writing ─────────────────────
-    # Promotions (4500-03) is pre-filled by R365 — read it and use it to
-    # compute the correct 4500-01 Discounts remainder instead of overwriting it.
-    r365_promotions = _read_je_cell_value(je_frame, "4500-03 - Promotions", "debit")
-    log.info("R365 pre-filled Promotions (4500-03): %.2f", r365_promotions)
+    # ── Read all current R365 values first, then verify and write if different ──
+    def _reconcile(account, field, revel_val):
+        """Read R365 value, compare to Revel. Write only if different."""
+        r365_val = _read_je_cell_value(je_frame, account, field)
+        revel_val = round(float(revel_val or 0), 2)
+        if r365_val == revel_val:
+            log.info("  MATCH    %-45s %s = %.2f (no write needed)", account, field, r365_val)
+        else:
+            log.info("  MISMATCH %-45s %s: R365=%.2f Revel=%.2f → writing", account, field, r365_val, revel_val)
+            if revel_val:
+                _fill_je_cell(je_frame, account, field, revel_val)
 
-    # Recalculate item_discounts using the actual R365 promotions value
+    # Read marketplace + promotions values (R365 pre-fills from platform data)
+    r365_promotions = _read_je_cell_value(je_frame, "4500-03 - Promotions", "debit")
+    r365_uber_eats  = _read_je_cell_value(je_frame, "1245-12 - A/R-UberEats", "debit")
+    r365_doordash   = _read_je_cell_value(je_frame, "1245-03 - A/R-DoorDash", "debit")
+    r365_grubhub    = _read_je_cell_value(je_frame, "1245-08 - A/R-GrubHub", "debit")
+    log.info("R365 current — Promotions: %.2f, UberEats: %.2f, DoorDash: %.2f, GrubHub: %.2f",
+             r365_promotions, r365_uber_eats, r365_doordash, r365_grubhub)
+
+    # Verify marketplace values against Revel — write if mismatch
+    _reconcile("1245-12 - A/R-UberEats", "debit", revel_values.get("uber_eats", 0))
+    _reconcile("1245-03 - A/R-DoorDash", "debit", revel_values.get("doordash", 0))
+    _reconcile("1245-08 - A/R-GrubHub",  "debit", revel_values.get("grubhub", 0))
+
+    # ── Discount reconciliation ───────────────────────────────────────────────
+    # Strategy:
+    # 1. Read ALL R365 discount rows (4500-01 all, 4500-02, 4500-03, 5000-17)
+    # 2. Sum them and compare to Revel total
+    # 3. If match → write nothing to discount fields
+    # 4. If variance → add variance to the plain 4500-01 row only
+
     revel_discounts_total = revel_values.get("revel_discounts_total", 0.0)
-    employee_discount     = revel_values.get("employee_discount", 0.0)
-    comps                 = revel_values.get("comps", 0.0)
-    app_reward            = revel_values.get("app_reward", 0.0)
-    item_discounts = round(max(
-        revel_discounts_total - employee_discount - comps - r365_promotions - app_reward, 0.0
-    ), 2)
+    revel_discounts_data  = revel_values.get("discounts_data", [])
+
+    # Build Revel amounts list for verification (non-total rows only)
+    revel_amounts = [
+        round(float(r.get("amount", 0)), 2)
+        for r in revel_discounts_data
+        if not r.get("is_total")
+    ]
+
+    def _verify_in_revel(label: str, val: float) -> bool:
+        """Verify an R365 value exists in Revel discounts_data (single or sum of rows)."""
+        val = round(val, 2)
+        if val == 0.0:
+            return True
+        if val in revel_amounts:
+            log.info("  VERIFIED   %-35s %.2f — direct match in Revel", label, val)
+            return True
+        from itertools import combinations
+        for n in range(2, min(len(revel_amounts) + 1, 6)):
+            for combo in combinations(revel_amounts, n):
+                if round(sum(combo), 2) == val:
+                    log.info("  VERIFIED   %-35s %.2f = sum%s in Revel", label, val, combo)
+                    return True
+        log.warning("  UNVERIFIED %-35s %.2f NOT found in Revel discounts", label, val)
+        return False
+
+    # Read ALL R365 discount-related rows and their current values
+    r365_discount_rows = je_frame.evaluate("""
+        (() => {
+            const scope = document.querySelector('#DSSJournalEntryGrid') || document;
+            const rows = Array.from(scope.querySelectorAll('tr[role="row"]'));
+            const result = [];
+            const DISCOUNT_ACCOUNTS = ['4500-01', '4500-02', '4500-03', '5000-17'];
+            rows.forEach(r => {
+                const tds = r.querySelectorAll('td');
+                if (tds.length < 4) return;
+                const clone = tds[1].cloneNode(true);
+                clone.querySelectorAll('select').forEach(s => s.remove());
+                const acct = clone.textContent.trim();
+                if (DISCOUNT_ACCOUNTS.some(a => acct.includes(a))) {
+                    const debit = parseFloat(tds[2].textContent.replace(/[^0-9.-]/g, '')) || 0;
+                    const comment = tds.length > 4 ? tds[4].textContent.trim() : '';
+                    const isPlain4500_01 = acct.includes('4500-01') && !comment;
+                    if (debit > 0) result.push({
+                        account: acct,
+                        comment: comment,
+                        value: Math.round(debit * 100) / 100,
+                        isPlain: isPlain4500_01
+                    });
+                }
+            });
+            return result;
+        })()
+    """) or []
+
+    log.info("R365 discount rows read: %s", r365_discount_rows)
+
+    # Verify each row against Revel and sum total
+    r365_discount_total = 0.0
+    plain_4500_01_value = 0.0
+    for row in r365_discount_rows:
+        val     = round(float(row.get("value", 0)), 2)
+        label   = f"{row.get('account','')} {row.get('comment','')}".strip()
+        _verify_in_revel(label, val)
+        r365_discount_total += val
+        if row.get("isPlain"):
+            plain_4500_01_value = val
+    r365_discount_total = round(r365_discount_total, 2)
+
+    # Compare totals
+    discount_variance = round(revel_discounts_total - r365_discount_total, 2)
     log.info(
-        "item_discounts = %.2f - %.2f - %.2f - %.2f (r365 promotions) - %.2f = %.2f",
-        revel_discounts_total, employee_discount, comps, r365_promotions, app_reward, item_discounts
+        "Discount totals — Revel: %.2f  R365: %.2f  Variance: %.2f",
+        revel_discounts_total, r365_discount_total, discount_variance
     )
+
+    # Only write to plain 4500-01 if there's a variance
+    if discount_variance == 0.0:
+        log.info("✅ Discounts match — no writes needed to discount fields")
+        item_discounts = 0.0  # signal: don't write
+    else:
+        item_discounts = round(plain_4500_01_value + discount_variance, 2)
+        log.info(
+            "⚠️  Discount variance %.2f → updating 4500-01 from %.2f to %.2f",
+            discount_variance, plain_4500_01_value, item_discounts
+        )
 
     log.info("Filling Journal Entry — values: %s", revel_values)
 
-    def _fill(account, field, key):
-        val = revel_values.get(key) or 0
-        if val:
-            _fill_je_cell(je_frame, account, field, float(val))
-
-    # Account labels must match substrings of the exact td text in R365 DOM.
-
     # ── Credits ──────────────────────────────────────────────────────────────
-    _fill("4000-01 - Food Sales",            "credit", "food_sales")
-    _fill("4000-02 - Beverage Sales",         "credit", "beverage_sales")
-    _fill("4000-08 - Food Delivery Sales",    "credit", "delivery_food_sales")
-    _fill("2240-000 - Sales Tax Payable",     "credit", "sales_tax")
+    _reconcile("4000-01 - Food Sales",           "credit", revel_values.get("food_sales"))
+    _reconcile("4000-02 - Beverage Sales",        "credit", revel_values.get("beverage_sales"))
+    _reconcile("4000-08 - Food Delivery Sales",   "credit", revel_values.get("delivery_food_sales"))
+    _reconcile("2240-000 - Sales Tax Payable",    "credit", revel_values.get("sales_tax"))
 
     # ── Debits ───────────────────────────────────────────────────────────────
-    _fill("70250 - Credit Card Fees",                   "credit", "credit_card_fees")
-    _fill("1200-000 - A/R Credit Cards Receivable",     "debit",  "credit_cards_ar")
-    _fill("1245-12 - A/R-UberEats",                     "debit",  "uber_eats")
-    _fill("1245-03 - A/R-DoorDash",                     "debit",  "doordash")
-    _fill("1245-08 - A/R-GrubHub",                      "debit",  "grubhub")
+    _reconcile("70250 - Credit Card Fees",                  "credit", revel_values.get("credit_card_fees"))
+    _reconcile("1200-000 - A/R Credit Cards Receivable",    "debit",  revel_values.get("credit_cards_ar"))
+    # Discount fields — only write if variance exists (item_discounts > 0)
     if item_discounts:
-        _fill_je_cell(je_frame, "4500-01 - Discounts", "debit", item_discounts)
-    _fill("4500-02 - Comps",                            "debit",  "comps")
-    _fill("5000-17 - Employee Discount",                "debit",  "employee_discount")
-    # 4500-03 Promotions — NOT written, R365 pre-fills it correctly
-    # 2301 Employee Tips Payable (first/editable row — debit)
-    _fill("2301 - Employee Tips Payable",               "debit",  "employee_tips")
+        _reconcile("4500-01 - Discounts",                   "debit",  item_discounts)
+    _reconcile("4500-02 - Comps",                           "debit",  revel_values.get("comps"))
+    _reconcile("5000-17 - Employee Discount",               "debit",  revel_values.get("employee_discount"))
+    # 4500-03 Promotions — R365 pre-fills, verified above but not written
+    _reconcile("2301 - Employee Tips Payable",              "debit",  revel_values.get("employee_tips"))
 
     # NOTE: 1255 - Undeposited Funds, 8000-06 - Cash Over/Short, and the
     # second 2301 - Employee Tips Payable row are read-only — R365 fills them.

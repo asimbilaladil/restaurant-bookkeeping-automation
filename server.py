@@ -457,6 +457,7 @@ def _extract_revel_values(data: dict) -> dict:
         "comps":                comps,
         "item_discounts":       item_discounts,  # fallback only; journal_entry.py recalculates using R365 promotions
         "revel_discounts_total": revel_discounts_total,
+        "discounts_data":        discounts_data,
         "app_reward":           app_reward,
         "employee_discount":    employee_discount,
         "promotions":           promotions,  # not written to R365 — used for reference only
