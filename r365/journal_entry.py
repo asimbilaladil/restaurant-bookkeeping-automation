@@ -260,15 +260,18 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     log.info("R365 discount rows read: %s", r365_discount_rows)
 
     # Verify each row against Revel and sum total
+    # Track only the FIRST plain 4500-01 row — _fill_je_cell also targets the first match
     r365_discount_total = 0.0
     plain_4500_01_value = 0.0
+    plain_4500_01_found = False
     for row in r365_discount_rows:
         val     = round(float(row.get("value", 0)), 2)
         label   = f"{row.get('account','')} {row.get('comment','')}".strip()
         _verify_in_revel(label, val)
         r365_discount_total += val
-        if row.get("isPlain"):
+        if row.get("isPlain") and not plain_4500_01_found:
             plain_4500_01_value = val
+            plain_4500_01_found = True
     r365_discount_total = round(r365_discount_total, 2)
 
     # Compare totals
