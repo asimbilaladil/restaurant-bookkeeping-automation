@@ -23,7 +23,9 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
+from contextlib import contextmanager
 from datetime import date
 from functools import wraps
 from pathlib import Path
@@ -61,6 +63,28 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+LOGS_DIR = Path("logs")
+LOGS_DIR.mkdir(exist_ok=True)
+_LOG_FMT = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def _entity_log(location_name: str, target_date: date | None):
+    """Attach a per-entity FileHandler for the duration of a block, then remove it."""
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", location_name or "unknown")
+    date_str  = target_date.strftime("%Y-%m-%d") if target_date else "nodate"
+    log_path  = LOGS_DIR / f"{safe_name}_{date_str}.log"
+
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    handler.setFormatter(_LOG_FMT)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        yield log_path
+    finally:
+        root.removeHandler(handler)
+        handler.close()
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
@@ -188,6 +212,12 @@ def screenshot(filename):
     return send_from_directory("/tmp", filename)
 
 
+@app.route("/logs/<path:filename>")
+@login_required
+def entity_log(filename):
+    return send_from_directory(str(LOGS_DIR.resolve()), filename, mimetype="text/plain")
+
+
 @app.route("/api/r365/navigate", methods=["POST"])
 @login_required
 def r365_navigate():
@@ -209,10 +239,12 @@ def r365_navigate():
     revel_values = _extract_revel_values(revel_data)
 
     import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(open_r365_journal_entry, target_date, location_name, revel_values)
-        result = future.result(timeout=300)
+    with _entity_log(location_name, target_date) as log_path:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(open_r365_journal_entry, target_date, location_name, revel_values)
+            result = future.result(timeout=300)
 
+    result["log_filename"] = log_path.name
     if "error" in result:
         return jsonify(result), 500
     return jsonify(result)
@@ -250,10 +282,12 @@ def r365_reconcile_all():
 
             event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "running"})
             try:
-                result = open_r365_journal_entry(target_date, name, revel_values)
+                with _entity_log(name, target_date) as log_path:
+                    result = open_r365_journal_entry(target_date, name, revel_values)
                 if "error" in result:
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
-                                     "status": "error", "error": result["error"]})
+                                     "status": "error", "error": result["error"],
+                                     "log_url": f"/logs/{log_path.name}"})
                 else:
                     before = result.get("before_screenshot_filename")
                     after  = result.get("screenshot_filename")
@@ -264,6 +298,7 @@ def r365_reconcile_all():
                         "r365_url": result.get("url"),
                         "before_screenshot_url": f"/screenshots/{before}" if before else None,
                         "screenshot_url": f"/screenshots/{after}" if after else None,
+                        "log_url": f"/logs/{log_path.name}",
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)
