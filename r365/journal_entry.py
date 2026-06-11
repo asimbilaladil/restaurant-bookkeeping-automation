@@ -352,6 +352,32 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     active.screenshot(path=screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
+    # ── Save ─────────────────────────────────────────────────────────────────
+    # Save dropdown: click "Save" button to open dropdown, then click "Save" item
+    # DOM: data-testid="saveMenuItem" inside .dropdown-menu
+    try:
+        # Click the Save button to open the dropdown
+        save_btn = active.locator('button:has-text("Save"), [data-testid="saveButton"], .btn:has-text("Save")').first
+        save_btn.wait_for(timeout=5_000)
+        save_btn.click()
+        active.wait_for_timeout(800)
+
+        # Click the "Save" menu item (not "Save and Close")
+        save_item = active.locator('[data-testid="saveMenuItem"]').first
+        save_item.wait_for(timeout=3_000)
+        save_item.click()
+        active.wait_for_timeout(2_000)
+        log.info("✅ Saved successfully")
+    except Exception as e:
+        log.warning("Could not save: %s — trying fallback", e)
+        try:
+            # Fallback: find the dropdown-menu Save item directly
+            active.locator('.dropdown-menu li[data-testid="saveMenuItem"]').first.click()
+            active.wait_for_timeout(2_000)
+            log.info("✅ Saved via fallback")
+        except Exception as e2:
+            log.warning("Save fallback also failed: %s", e2)
+
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
 
