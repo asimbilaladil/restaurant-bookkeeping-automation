@@ -338,8 +338,8 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
                 active.keyboard.type("variance")
                 je_frame.wait_for_timeout(300)
 
-                # Click Add button
-                je_frame.locator('button:has-text("Add"), input[value="Add"]').first.click()
+                # Click Add button — scoped to grid toolbar to avoid matching "Add Comment"
+                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
                 je_frame.wait_for_timeout(1000)
                 log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'variance'",
                          cash_over_short, cash_over_short_sign)
