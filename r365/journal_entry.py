@@ -301,8 +301,53 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     # 4500-03 Promotions — R365 pre-fills, verified above but not written
     _reconcile("2301 - Employee Tips Payable",              "debit",  revel_values.get("employee_tips"))
 
-    # NOTE: 1255 - Undeposited Funds, 8000-06 - Cash Over/Short, and the
-    # second 2301 - Employee Tips Payable row are read-only — R365 fills them.
+    # ── Cash Over/Short ───────────────────────────────────────────────────────
+    # Formula: Net To Account For − Grand Total (Payments) = variance
+    # If positive → credit 8000-06; if negative → debit 8000-06
+    # Only add if not already present in the JE grid.
+    cash_over_short      = revel_values.get("cash_over_short", 0.0)
+    cash_over_short_sign = revel_values.get("cash_over_short_sign", "credit")
+
+    if cash_over_short and cash_over_short > 0:
+        # Check if 8000-06 row already exists
+        existing_cos = _read_je_cell_value(je_frame, "8000-06", cash_over_short_sign)
+        if existing_cos == cash_over_short:
+            log.info("✅ 8000-06 Cash Over/Short already correct: %.2f", cash_over_short)
+        else:
+            log.info("Adding 8000-06 Cash Over/Short: %.2f (%s)", cash_over_short, cash_over_short_sign)
+            try:
+                # Use the Add row at the top of the JE grid
+                # Select account in the dropdown
+                acct_input = je_frame.locator('input[placeholder="Select Account"], .k-combobox input').first
+                acct_input.click()
+                acct_input.fill("8000-06")
+                je_frame.wait_for_timeout(1000)
+                # Pick first dropdown option
+                je_frame.locator('.k-list-container li, .k-popup li').first.click()
+                je_frame.wait_for_timeout(500)
+
+                # Fill debit or credit amount
+                col = "credit" if cash_over_short_sign == "credit" else "debit"
+                amt_input = je_frame.locator(f'input[name="{col}"]').first
+                if amt_input.count() == 0:
+                    # Try by position in the add row
+                    amt_input = je_frame.locator('.k-grid-toolbar input').nth(1 if col == "debit" else 2)
+                amt_input.fill(f"{cash_over_short:.2f}")
+                je_frame.wait_for_timeout(300)
+
+                # Fill comment "variance"
+                comment_input = je_frame.locator('input[name="comment"], input[placeholder*="omment"]').first
+                if comment_input.count() > 0:
+                    comment_input.fill("variance")
+                    je_frame.wait_for_timeout(300)
+
+                # Click Add button
+                je_frame.locator('button:has-text("Add"), input[value="Add"]').first.click()
+                je_frame.wait_for_timeout(1000)
+                log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'variance'",
+                         cash_over_short, cash_over_short_sign)
+            except Exception as e:
+                log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
 
     active.screenshot(path=screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
