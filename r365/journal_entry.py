@@ -353,30 +353,24 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
     # ── Save ─────────────────────────────────────────────────────────────────
-    # Save dropdown: click "Save" button to open dropdown, then click "Save" item
-    # DOM: data-testid="saveMenuItem" inside .dropdown-menu
+    # The Save toolbar is an Angular ng-click on a <li data-testid="saveMenuItem">
+    # — not a real <button>. We must trigger the Angular handler via JavaScript.
     try:
-        # Click the Save button to open the dropdown
-        save_btn = active.locator('button:has-text("Save"), [data-testid="saveButton"], .btn:has-text("Save")').first
-        save_btn.wait_for(timeout=5_000)
-        save_btn.click()
-        active.wait_for_timeout(800)
-
-        # Click the "Save" menu item (not "Save and Close")
-        save_item = active.locator('[data-testid="saveMenuItem"]').first
-        save_item.wait_for(timeout=3_000)
-        save_item.click()
-        active.wait_for_timeout(2_000)
-        log.info("✅ Saved successfully")
+        saved = active.evaluate("""
+            () => {
+                // Find the saveMenuItem li and fire ng-click via angular scope
+                const el = document.querySelector('[data-testid="saveMenuItem"]');
+                if (!el) return 'saveMenuItem not found';
+                // Fire the ng-click handler directly
+                el.click();
+                return 'clicked';
+            }
+        """)
+        log.info("Save JS click result: %s", saved)
+        active.wait_for_timeout(3_000)
+        log.info("✅ Saved via JS ng-click")
     except Exception as e:
-        log.warning("Could not save: %s — trying fallback", e)
-        try:
-            # Fallback: find the dropdown-menu Save item directly
-            active.locator('.dropdown-menu li[data-testid="saveMenuItem"]').first.click()
-            active.wait_for_timeout(2_000)
-            log.info("✅ Saved via fallback")
-        except Exception as e2:
-            log.warning("Save fallback also failed: %s", e2)
+        log.warning("Save failed: %s", e)
 
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
