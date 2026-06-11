@@ -332,13 +332,14 @@ def _extract_revel_values(data: dict) -> dict:
     delivery_sales  = f(class_map.get("5. Delivery - Food", {}).get("price", 0))
 
     # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
-    # food_sales credit = product_mix food_sales + net_sales_untaxed
-    # 4000-011 debit    = net_sales_untaxed (separate row, always debit)
+    # 4000-011 Food Sales-tax exempt is always a DEBIT row with abs(net_sales_untaxed).
+    # 4000-01 Food Sales credit = product_mix price + abs(net_sales_untaxed)
+    # (the untaxed amount is separated into its own row so we add it back to food_sales)
     net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
     if net_sales_untaxed != 0:
-        food_sales        = round(food_sales + net_sales_untaxed, 2)
+        tax_exempt_amount = round(abs(net_sales_untaxed), 2)
+        food_sales        = round(food_sales + tax_exempt_amount, 2)
         tax_exempt_field  = "debit"
-        tax_exempt_amount = abs(net_sales_untaxed)
     else:
         tax_exempt_field  = None
         tax_exempt_amount = 0.0
