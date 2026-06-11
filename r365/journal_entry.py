@@ -35,21 +35,28 @@ def _find_je_table(frame):
     """)
 
 
-def _fill_je_cell(frame, account_text: str, field_name: str, value: float) -> bool:
+def _fill_je_cell(frame, account_text: str, field_name: str, value: float, no_comment: bool = False) -> bool:
     # col indices confirmed by DOM inspection: col2=debit, col3=credit
     col_idx = 3 if field_name == "credit" else 2
+    no_comment_js = "true" if no_comment else "false"
 
     try:
         click_result = frame.evaluate(f"""
             (() => {{
                 const scope = document.querySelector('#DSSJournalEntryGrid') || document;
                 const rows = Array.from(scope.querySelectorAll('tr[role="row"]'));
+                const noComment = {no_comment_js};
                 const row = rows.find(r => {{
                     const tds = r.querySelectorAll('td');
                     if (tds.length < 4) return false;
                     const clone = tds[1].cloneNode(true);
                     clone.querySelectorAll('select').forEach(s => s.remove());
-                    return clone.textContent.trim().includes({repr(account_text)});
+                    if (!clone.textContent.trim().includes({repr(account_text)})) return false;
+                    if (noComment) {{
+                        const comment = tds.length > 4 ? tds[4].textContent.trim() : '';
+                        if (comment) return false;
+                    }}
+                    return true;
                 }});
                 if (!row) return 'row-not-found (searched ' + rows.length + ' rows)';
                 const cell = row.querySelectorAll('td')[{col_idx}];
@@ -299,26 +306,27 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
                 log.info("✅ 4000-011 Food Sales-tax exempt already correct: %.2f", tax_exempt_amount)
             else:
                 log.info("Adding 4000-011 Food Sales-tax exempt: %.2f (%s)", tax_exempt_amount, tax_exempt_field)
-                # Type account into Select Account combobox
-                acct_input = je_frame.locator('.k-combobox input, input[placeholder="Select Account"]').first
+                # Use same pattern as 8000-06: type, Enter to select, Tab to field
+                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
+                acct_input.scroll_into_view_if_needed()
                 acct_input.click()
                 acct_input.fill("4000-011")
-                je_frame.wait_for_timeout(1000)
-                je_frame.locator('.k-list-container li, .k-popup li').first.click()
+                je_frame.wait_for_timeout(1200)
+                acct_input.press("Enter")
                 je_frame.wait_for_timeout(500)
-                # Fill the debit or credit amount
-                amt_input = je_frame.locator(f'input[name="{tax_exempt_field}"]').first
-                amt_input.fill(f"{tax_exempt_amount:.2f}")
+                # Tab to Debit field; tax_exempt_field is always "debit"
+                acct_input.press("Tab")  # → Debit field
+                active.keyboard.type(f"{tax_exempt_amount:.2f}")
                 je_frame.wait_for_timeout(300)
-                # Fill comment
-                comment_input = je_frame.locator('input[name="comment"]').first
-                if comment_input.count() > 0:
-                    comment_input.fill("Untaxed Net Sales")
-                    je_frame.wait_for_timeout(300)
-                # Click Add
-                je_frame.locator('button:has-text("Add"), [ng-click*="add"], .k-grid-add').first.click()
+                # Tab to Comment and fill
+                active.keyboard.press("Tab")  # → Credit (skip)
+                active.keyboard.press("Tab")  # → Comment
+                active.keyboard.type("Untaxed Net Sales")
+                je_frame.wait_for_timeout(300)
+                # Click Add — scoped to grid toolbar
+                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
                 je_frame.wait_for_timeout(1000)
-                log.info("✅ 4000-011 row added: %.2f %s 'Untaxed Net Sales'", tax_exempt_amount, tax_exempt_field)
+                log.info("✅ 4000-011 row added: %.2f debit 'Untaxed Net Sales'", tax_exempt_amount)
         except Exception as e:
             log.warning("Could not add 4000-011 tax-exempt row: %s", e)
 
@@ -330,8 +338,14 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     _reconcile("70250 - Credit Card Fees",                  "credit", revel_values.get("credit_card_fees"))
     _reconcile("1200-000 - A/R Credit Cards Receivable",    "debit",  revel_values.get("credit_cards_ar"))
     # Discount fields — only write if variance exists (item_discounts > 0)
+    # Must target the plain (no-comment) 4500-01 row to avoid overwriting "Gift Card Redeemed" etc.
     if item_discounts:
-        _reconcile("4500-01 - Discounts",                   "debit",  item_discounts)
+        r365_plain = _read_je_cell_value(je_frame, "4500-01 - Discounts", "debit")
+        if r365_plain != item_discounts:
+            log.info("  MISMATCH %-45s debit: R365=%.2f Revel=%.2f → writing (no_comment)", "4500-01 - Discounts", r365_plain, item_discounts)
+            _fill_je_cell(je_frame, "4500-01 - Discounts", "debit", item_discounts, no_comment=True)
+        else:
+            log.info("  MATCH    %-45s debit = %.2f (no write needed)", "4500-01 - Discounts", r365_plain)
     _reconcile("4500-02 - Comps",                           "debit",  revel_values.get("comps"))
     _reconcile("5000-17 - Employee Discount",               "debit",  revel_values.get("employee_discount"))
     # 4500-03 Promotions — R365 pre-fills, verified above but not written
