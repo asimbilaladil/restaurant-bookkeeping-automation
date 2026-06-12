@@ -547,12 +547,12 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
                 if cash_over_short_sign == "debit":
                     active.keyboard.press("Tab")  # skip Credit field
                 active.keyboard.press("Tab")      # → Comment field
-                active.keyboard.type("variance")
+                active.keyboard.type("Variance")
                 je_frame.wait_for_timeout(300)
 
                 je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
                 je_frame.wait_for_timeout(1000)
-                log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'variance'",
+                log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'Variance'",
                          cash_over_short, cash_over_short_sign)
             except Exception as e:
                 log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
