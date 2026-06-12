@@ -367,20 +367,19 @@ def _extract_revel_values(data: dict) -> dict:
         except (TypeError, ValueError):
             return 0.0
 
-    # ── Sales by Class (Gross Sales column = price) ───────────────────────────
+    # ── Sales by Class ────────────────────────────────────────────────────────
     class_map = {
         row["product_class"]: row
         for row in product_mix
         if row.get("row_type") == "Class"
     }
-    food_sales      = f(class_map.get("1. Food", {}).get("price", 0))
-    beverage_sales  = f(class_map.get("2. Beverage", {}).get("price", 0))
-    delivery_sales  = f(class_map.get("5. Delivery - Food", {}).get("price", 0))
+    food_row     = class_map.get("1. Food", {})
+    food_sales   = round(f(food_row.get("taxable_sales", 0)) + f(food_row.get("untaxable_sales", 0)), 2)
+    beverage_sales = f(class_map.get("2. Beverage", {}).get("taxable_sales", 0))
+    del_row      = class_map.get("5. Delivery - Food", {})
+    delivery_sales = round(f(del_row.get("taxable_sales", 0)) + f(del_row.get("untaxable_sales", 0)), 2)
 
     # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
-    # 4000-011 Food Sales-tax exempt is always a DEBIT row with abs(net_sales_untaxed).
-    # 4000-01 Food Sales credit = product_mix price + abs(net_sales_untaxed)
-    # (the untaxed amount is separated into its own row so we add it back to food_sales)
     net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
     if net_sales_untaxed != 0:
         tax_exempt_amount = round(abs(net_sales_untaxed), 2)
@@ -397,11 +396,10 @@ def _extract_revel_values(data: dict) -> dict:
             tax_total = f(row.get("tax", 0))
             break
 
-    # ── Credit Cards AR = credit sales + credit tips - credit refunds ─────────
-    credit_sales   = f(sd.get("credit_total", 0))
-    credit_tips    = f(sd.get("credit_tips_total", 0))
-    credit_refunds = f(sd.get("credit_refunds", 0))
-    credit_cards_ar = round(credit_sales + credit_tips - credit_refunds, 2)
+    # ── Credit Cards AR = credit sales + credit tips ─────────────────────────
+    credit_sales    = f(sd.get("credit_total", 0))
+    credit_tips     = f(sd.get("credit_tips_total", 0))
+    credit_cards_ar = round(credit_sales + credit_tips, 2)
 
     # ── Marketplace payments (custom_payments dict) ───────────────────────────
     custom = sd.get("custom_payments") or {}

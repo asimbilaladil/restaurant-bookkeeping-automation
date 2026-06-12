@@ -496,14 +496,7 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     # ── Debits ───────────────────────────────────────────────────────────────
     _reconcile("70250 - Credit Card Fees",                  "credit", revel_values.get("credit_card_fees"))
-    # CC AR: trust R365's pre-filled value if non-zero — R365 computes tips into this
-    # figure from its own data, which can differ from Revel's credit_tips_total.
-    # Writing Revel's value here causes a net imbalance that cash_over_short can't fix.
-    r365_cc_ar = _read_je_cell_value(je_frame, "1200-000 - A/R Credit Cards Receivable", "debit")
-    if r365_cc_ar:
-        log.info("  SKIP     1200-000 - A/R Credit Cards Receivable  debit = %.2f (trusting R365 pre-filled)", r365_cc_ar)
-    else:
-        _reconcile("1200-000 - A/R Credit Cards Receivable", "debit", revel_values.get("credit_cards_ar"))
+    _reconcile("1200-000 - A/R Credit Cards Receivable", "debit", revel_values.get("credit_cards_ar"))
     # Discount fields — only write if variance exists (item_discounts > 0)
     # Must target the plain (no-comment) 4500-01 row to avoid overwriting "Gift Card Redeemed" etc.
     if item_discounts:
