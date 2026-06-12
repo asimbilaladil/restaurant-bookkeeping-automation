@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Receivable Reconciliation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f4f6fb;
+      --white:     #ffffff;
+      --border:    #e4e9f2;
+      --border2:   #d0d9ea;
+      --text:      #0d1526;
+      --sub:       #4b5675;
+      --muted:     #8594ae;
+      --cyan:      #0891b2;
+      --cyan-lt:   #e0f7fa;
+      --indigo:    #4f46e5;
+      --indigo-lt: #eef2ff;
+      --green:     #059669;
+      --green-lt:  #ecfdf5;
+      --amber:     #d97706;
+      --amber-lt:  #fffbeb;
+      --red:       #dc2626;
+      --red-lt:    #fff1f1;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
+      --shadow-md: 0 2px 8px rgba(0,0,0,0.07), 0 12px 32px rgba(0,0,0,0.05);
+      --r:         12px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 0 0 80px;
+    }
+
+    /* ─── Top banner ─── */
+    .top-bar {
+      background: linear-gradient(135deg, #0891b2 0%, #0e7490 55%, #155e75 100%);
+      padding: 36px 32px 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .top-bar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 55% 80% at 95% 50%, rgba(255,255,255,0.08) 0%, transparent 70%),
+        radial-gradient(ellipse 30% 50% at 10% 80%, rgba(255,255,255,0.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .top-bar-inner { max-width: 960px; margin: 0 auto; position: relative; display: flex; align-items: flex-start; justify-content: space-between; }
+    .top-bar-left { flex: 1; }
+    .top-bar-actions { display: flex; align-items: center; gap: 8px; }
+
+    .btn-back, .btn-logout {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.9);
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s;
+      flex-shrink: 0;
+      margin-top: 4px;
+    }
+    .btn-back:hover, .btn-logout:hover { background: rgba(255,255,255,0.22); }
+
+    .top-bar-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 99px;
+      padding: 3px 12px 3px 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.9);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 14px;
+    }
+    .top-bar-badge svg { opacity: 0.8; }
+    .top-bar h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+    .top-bar p {
+      font-size: 0.9rem;
+      color: rgba(255,255,255,0.65);
+      font-weight: 400;
+      max-width: 480px;
+    }
+
+    /* ─── Main container ─── */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 28px 24px 0;
+    }
+
+    /* ─── White card ─── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ─── Controls ─── */
+    .controls-card {
+      padding: 18px 22px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+    input[type="date"] {
+      height: 40px;
+      padding: 0 13px;
+      border: 1.5px solid var(--border2);
+      border-radius: 8px;
+      font-size: 0.88rem;
+      font-family: inherit;
+      color: var(--text);
+      background: var(--white);
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input[type="date"]:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(8,145,178,0.12);
+    }
+
+    .btn {
+      height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 18px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.16s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--cyan);
+      color: #fff;
+      box-shadow: 0 1px 2px rgba(8,145,178,0.25), 0 4px 12px rgba(8,145,178,0.2);
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #0e7490;
+      box-shadow: 0 2px 4px rgba(8,145,178,0.3), 0 8px 20px rgba(8,145,178,0.25);
+      transform: translateY(-1px);
+    }
+    .btn-outline {
+      background: var(--white);
+      color: var(--sub);
+      border: 1.5px solid var(--border2);
+    }
+    .btn-outline:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-lt); }
+
+    /* ─── Stats row ─── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      padding: 18px 20px;
+      border-radius: var(--r);
+    }
+    .stat-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .stat-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+    }
+    .stat-icon {
+      width: 28px; height: 28px;
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .stat-val {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      color: var(--text);
+    }
+    .stat-val span { font-size: 1rem; font-weight: 500; color: var(--muted); }
+    .stat-fetched .stat-icon { background: var(--cyan-lt); color: var(--cyan); }
+    .stat-ok      .stat-icon { background: var(--green-lt); color: var(--green); }
+    .stat-issues  .stat-icon { background: var(--red-lt);   color: var(--red); }
+    .stat-fetched .stat-val  { color: var(--cyan); }
+    .stat-ok      .stat-val  { color: var(--green); }
+    .stat-issues  .stat-val  { color: var(--red); }
+
+    /* ─── Section header ─── */
+    .section-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .section-hdr h2 {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    /* ─── Entity grid ─── */
+    .est-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .est-card {
+      background: var(--white);
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: var(--shadow-sm);
+      padding: 14px 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border-top: 3px solid var(--border2);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .est-card.pending  { border-top-color: var(--border2); }
+    .est-card.running  { border-top-color: var(--cyan);   box-shadow: 0 0 0 2px rgba(8,145,178,0.1), var(--shadow-sm); }
+    .est-card.success  { border-top-color: var(--green);  background: #f9fffe; }
+    .est-card.error    { border-top-color: var(--red);    background: #fffafa; }
+
+    .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+    .card-names { flex: 1; min-width: 0; }
+    .card-loc { font-size: 0.82rem; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-id  { font-size: 0.7rem; color: var(--muted); margin-top: 1px; }
+
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px; border-radius: 99px;
+      font-size: 0.67rem; font-weight: 700; white-space: nowrap; flex-shrink: 0;
+    }
+    .status-pill.pending  { background: var(--bg);       color: var(--muted); }
+    .status-pill.running  { background: var(--cyan-lt);  color: var(--cyan); }
+    .status-pill.success  { background: var(--green-lt); color: var(--green); }
+    .status-pill.error    { background: var(--red-lt);   color: var(--red); }
+
+    .card-divider { height: 1px; background: var(--border); }
+
+    .card-rows { display: flex; flex-direction: column; gap: 7px; }
+    .card-row { display: flex; flex-direction: column; gap: 3px; }
+    .row-hdr { display: flex; align-items: center; justify-content: space-between; }
+    .row-label { font-size: 0.69rem; color: var(--muted); font-weight: 600; }
+    .row-state { font-size: 0.69rem; font-weight: 700; }
+    .row-state.pending { color: var(--muted); }
+    .row-state.running { color: var(--cyan); }
+    .row-state.success { color: var(--green); }
+    .row-state.error   { color: var(--red); }
+    .row-state.skip    { color: var(--amber); }
+
+    .prog-track { height: 3px; border-radius: 99px; background: var(--border); overflow: hidden; }
+    .prog-fill  { height: 100%; border-radius: 99px; transition: width 0.4s ease; width: 0%; }
+    .prog-fill.pending { background: var(--muted); width: 0%; }
+    .prog-fill.running { background: var(--cyan);  width: 55%; }
+    .prog-fill.success { background: var(--green); width: 100%; }
+    .prog-fill.error   { background: var(--red);   width: 100%; }
+
+    .card-link { font-size: 0.69rem; color: var(--cyan); text-decoration: none; font-weight: 600; }
+    .card-link:hover { text-decoration: underline; }
+
+    /* ─── Results table ─── */
+    .results-wrap {
+      margin-bottom: 24px;
+      border-radius: var(--r);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      background: var(--white);
+    }
+    .results-table thead th {
+      padding: 11px 14px;
+      text-align: left;
+      font-size: 0.69rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .results-table thead th:not(:first-child) { text-align: right; }
+    .results-table tbody tr { border-bottom: 1px solid var(--border); }
+    .results-table tbody tr:last-child { border-bottom: none; }
+    .results-table tbody tr:hover { background: #fafbfd; }
+    .results-table tbody td {
+      padding: 10px 14px;
+      color: var(--sub);
+      vertical-align: middle;
+    }
+    .results-table tbody td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+    .td-name { font-weight: 600; color: var(--text); }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 99px;
+      font-size: 0.67rem; font-weight: 700;
+    }
+    .badge.ok      { background: var(--green-lt); color: var(--green); }
+    .badge.warning { background: var(--amber-lt); color: var(--amber); }
+    .badge.error   { background: var(--red-lt);   color: var(--red); }
+    .badge.pending { background: var(--bg);        color: var(--muted); }
+
+    /* ─── Activity log ─── */
+    .log-card { padding: 16px 20px; }
+    .log-hdr { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
+    .log-body { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+    .log-line { display: flex; gap: 10px; font-size: 0.78rem; line-height: 1.5; }
+    .log-ts   { color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .log-msg  { color: var(--sub); }
+    .log-msg.info    { color: var(--sub); }
+    .log-msg.success { color: var(--green); font-weight: 600; }
+    .log-msg.error   { color: var(--red);   font-weight: 600; }
+    .log-msg.warn    { color: var(--amber); font-weight: 600; }
+
+    /* ─── Empty state ─── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--muted);
+    }
+    .empty-state svg { opacity: 0.3; margin-bottom: 14px; }
+    .empty-state p { font-size: 0.85rem; }
+
+    /* ─── Spinner ─── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 0.8s linear infinite; display: inline-block; }
+  </style>
+</head>
+<body>
+
+<!-- ─── Header ─── -->
+<div class="top-bar">
+  <div class="top-bar-inner">
+    <div class="top-bar-left">
+      <div class="top-bar-badge">
+        <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 4a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
+        </svg>
+        Receivable Reconciliation
+      </div>
+      <h1>Receivable Reconciliation</h1>
+      <p>Reconcile A/R credit card receivables across all locations and post results to Restaurant365.</p>
+    </div>
+    <div class="top-bar-actions">
+      <a href="/" class="btn-back">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 4l-6 6 6 6M4 10h12"/>
+        </svg>
+        Dashboard
+      </a>
+      <a href="/logout" class="btn-logout">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 3H5a2 2 0 00-2 2v10a2 2 0 002 2h4M13 7l4 3-4 3M17 10H7"/>
+        </svg>
+        Sign Out
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Main ─── -->
+<div class="container">
+
+  <!-- Controls -->
+  <div class="card controls-card">
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="dateInput" />
+    </div>
+    <button class="btn btn-primary" id="btnRun" onclick="startReconciliation()">
+      <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+      </svg>
+      Run Reconciliation
+    </button>
+    <button class="btn btn-outline" id="btnReset" onclick="resetUI()" style="display:none;">
+      Reset
+    </button>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-row">
+    <div class="card stat-card stat-fetched">
+      <div class="stat-top">
+        <div class="stat-label">Fetched</div>
+        <div class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z"/>
+            <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z"/>
+            <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z"/>
+          </svg>
+        </div>
+      </div>
+      <div class="stat-val" id="statFetched">0 <span>/ <span id="statTotal">0</span></span></div>
+    </div>
+    <div class="card stat-card stat-ok">
+      <div class="stat-top">
+        <div class="stat-label">Balanced</div>
+        <div class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+      </div>
+      <div class="stat-val stat-val--green" id="statOk">0</div>
+    </div>
+    <div class="card stat-card stat-issues">
+      <div class="stat-top">
+        <div class="stat-label">Issues</div>
+        <div class="stat-icon">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+      </div>
+      <div class="stat-val" id="statIssues">0</div>
+    </div>
+  </div>
+
+  <!-- Location grid -->
+  <div class="section-hdr">
+    <h2>Locations</h2>
+  </div>
+  <div class="est-grid" id="estGrid">
+    <div class="empty-state" style="grid-column:1/-1;padding:32px 0;">
+      <p>Select a date and click Run Reconciliation to begin.</p>
+    </div>
+  </div>
+
+  <!-- Results table -->
+  <div id="resultsSection" style="display:none;">
+    <div class="section-hdr">
+      <h2>Results</h2>
+    </div>
+    <div class="results-wrap">
+      <table class="results-table">
+        <thead>
+          <tr>
+            <th>Location</th>
+            <th>Revel AR</th>
+            <th>R365 AR</th>
+            <th>Variance</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Activity log -->
+  <div class="card log-card">
+    <div class="log-hdr">Activity Log</div>
+    <div class="log-body" id="logBody">
+      <div class="log-line">
+        <span class="log-ts">--:--:--</span>
+        <span class="log-msg info">Waiting to start…</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ─── State ───────────────────────────────────────────────────────────────────
+  let establishments = {};   // { id: name }
+  let results = {};          // { id: {...} }
+  let running = false;
+
+  // ─── Init ────────────────────────────────────────────────────────────────────
+  document.addEventListener("DOMContentLoaded", async () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    document.getElementById("dateInput").value = d.toISOString().slice(0, 10);
+    await loadEstablishments();
+  });
+
+  async function loadEstablishments() {
+    try {
+      const resp = await fetch("/api/establishments");
+      const data = await resp.json();
+      establishments = data.names || {};
+    } catch (e) {
+      addLog("Failed to load establishments: " + e.message, "error");
+    }
+  }
+
+  // ─── UI helpers ──────────────────────────────────────────────────────────────
+  function addLog(msg, type = "info") {
+    const body = document.getElementById("logBody");
+    const now = new Date().toTimeString().slice(0, 8);
+    const line = document.createElement("div");
+    line.className = "log-line";
+    line.innerHTML = `<span class="log-ts">${now}</span><span class="log-msg ${type}">${msg}</span>`;
+    body.appendChild(line);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function setStats(fetched, total, ok, issues) {
+    document.getElementById("statFetched").innerHTML = `${fetched} <span>/ <span id="statTotal">${total}</span></span>`;
+    document.getElementById("statOk").textContent = ok;
+    document.getElementById("statIssues").textContent = issues;
+  }
+
+  function buildGrid(ids) {
+    const grid = document.getElementById("estGrid");
+    grid.innerHTML = "";
+    ids.forEach(id => {
+      const name = establishments[id] || `Est. ${id}`;
+      const card = document.createElement("div");
+      card.id = `card-${id}`;
+      card.className = "est-card pending";
+      card.innerHTML = `
+        <div class="card-top">
+          <div class="card-names">
+            <div class="card-loc">${name}</div>
+            <div class="card-id">Est. ${id}</div>
+          </div>
+          <span class="status-pill pending" id="pill-${id}">Pending</span>
+        </div>
+        <div class="card-divider"></div>
+        <div class="card-rows">
+          <div class="card-row">
+            <div class="row-hdr">
+              <span class="row-label">Reconciliation</span>
+              <span class="row-state pending" id="row-${id}">Waiting</span>
+            </div>
+            <div class="prog-track"><div class="prog-fill pending" id="prog-${id}"></div></div>
+          </div>
+        </div>`;
+      grid.appendChild(card);
+    });
+  }
+
+  function updateCard(id, status, label) {
+    const card = document.getElementById(`card-${id}`);
+    const pill = document.getElementById(`pill-${id}`);
+    const row  = document.getElementById(`row-${id}`);
+    const prog = document.getElementById(`prog-${id}`);
+    if (!card) return;
+
+    const pillLabels = { pending: "Pending", running: "Running…", success: "Done", error: "Error" };
+    card.className = `est-card ${status}`;
+    pill.className = `status-pill ${status}`;
+    pill.textContent = pillLabels[status] || status;
+    row.className  = `row-state ${status}`;
+    row.textContent = label || pillLabels[status] || status;
+    prog.className = `prog-fill ${status}`;
+  }
+
+  function addResultRow(id, ravelAR, r365AR, variance, status) {
+    const body = document.getElementById("resultsBody");
+    const name = establishments[id] || `Est. ${id}`;
+    const fmt = v => v != null ? "$" + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "—";
+    const badgeClass = status === "ok" ? "ok" : status === "warning" ? "warning" : "error";
+    const badgeLabel = status === "ok" ? "Balanced" : status === "warning" ? "Variance" : "Error";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="td-name">${name}</td>
+      <td>${fmt(ravelAR)}</td>
+      <td>${fmt(r365AR)}</td>
+      <td>${fmt(variance)}</td>
+      <td><span class="badge ${badgeClass}">${badgeLabel}</span></td>`;
+    body.appendChild(tr);
+    document.getElementById("resultsSection").style.display = "";
+  }
+
+  function resetUI() {
+    results = {};
+    running = false;
+    document.getElementById("estGrid").innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:32px 0;"><p>Select a date and click Run Reconciliation to begin.</p></div>`;
+    document.getElementById("resultsSection").style.display = "none";
+    document.getElementById("resultsBody").innerHTML = "";
+    document.getElementById("logBody").innerHTML = `<div class="log-line"><span class="log-ts">--:--:--</span><span class="log-msg info">Waiting to start…</span></div>`;
+    document.getElementById("btnReset").style.display = "none";
+    document.getElementById("btnRun").disabled = false;
+    setStats(0, 0, 0, 0);
+  }
+
+  // ─── SSE reader ──────────────────────────────────────────────────────────────
+  async function readSSE(resp, handler) {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const block of parts) {
+        let type = "", data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) type = line.slice(7).trim();
+          else if (line.startsWith("data: ")) data = line.slice(6).trim();
+        }
+        if (type && data) {
+          try { handler(type, JSON.parse(data)); } catch { handler(type, data); }
+        }
+      }
+    }
+  }
+
+  // ─── Main action ─────────────────────────────────────────────────────────────
+  async function startReconciliation() {
+    const dateVal = document.getElementById("dateInput").value;
+    if (!dateVal) { alert("Please select a date."); return; }
+
+    running = true;
+    document.getElementById("btnRun").disabled = true;
+    document.getElementById("btnReset").style.display = "none";
+
+    const ids = Object.keys(establishments).map(Number);
+    buildGrid(ids);
+    setStats(0, ids.length, 0, 0);
+    addLog(`Starting receivable reconciliation for ${dateVal}…`, "info");
+
+    let fetched = 0, ok = 0, issues = 0;
+
+    try {
+      const resp = await fetch("/api/receivable/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: dateVal, establishments: ids }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        addLog("Server error: " + err, "error");
+        document.getElementById("btnRun").disabled = false;
+        return;
+      }
+
+      await readSSE(resp, (type, p) => {
+        if (type === "progress") {
+          const id = p.establishment_id;
+          const status = p.status;
+          fetched++;
+          if (status === "running") {
+            updateCard(id, "running", "Running…");
+            addLog(`${establishments[id] || id}: reconciling…`, "info");
+          } else if (status === "success") {
+            updateCard(id, "success", "Done");
+            ok++;
+            addLog(`${establishments[id] || id}: balanced ✓`, "success");
+            addResultRow(id, p.revel_ar, p.r365_ar, p.variance, "ok");
+          } else if (status === "variance") {
+            updateCard(id, "error", "Variance");
+            issues++;
+            addLog(`${establishments[id] || id}: variance $${(p.variance || 0).toFixed(2)}`, "warn");
+            addResultRow(id, p.revel_ar, p.r365_ar, p.variance, "warning");
+          } else if (status === "error") {
+            updateCard(id, "error", "Error");
+            issues++;
+            addLog(`${establishments[id] || id}: error — ${p.error || "unknown"}`, "error");
+            addResultRow(id, null, null, null, "error");
+          }
+          setStats(fetched, ids.length, ok, issues);
+        } else if (type === "done") {
+          addLog(`Reconciliation complete — ${ok} balanced, ${issues} issues.`, ok > 0 ? "success" : "info");
+          running = false;
+          document.getElementById("btnReset").style.display = "";
+          document.getElementById("btnRun").disabled = false;
+        } else if (type === "error") {
+          addLog("Stream error: " + (p.message || p), "error");
+          running = false;
+          document.getElementById("btnRun").disabled = false;
+          document.getElementById("btnReset").style.display = "";
+        }
+      });
+    } catch (e) {
+      addLog("Request failed: " + e.message, "error");
+      document.getElementById("btnRun").disabled = false;
+      document.getElementById("btnReset").style.display = "";
+    }
+  }
+</script>
+</body>
+</html>

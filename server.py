@@ -120,6 +120,12 @@ def index():
     return send_from_directory(".", "index.html")
 
 
+@app.route("/receivable-reconciliation")
+@login_required
+def receivable_reconciliation():
+    return send_from_directory(".", "receivable-reconciliation.html")
+
+
 @app.route("/api/establishments")
 @login_required
 def establishments():
