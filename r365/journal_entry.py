@@ -121,7 +121,133 @@ def _read_je_cell_value(frame, account_text: str, col: str) -> float:
         return 0.0
 
 
-def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png") -> None:
+def _screenshot_je_grid(frame, path: str) -> float:
+    """
+    Extract all JE rows from the Kendo grid, render them as a self-contained HTML
+    table, and screenshot that — guarantees every row is visible regardless of
+    the grid's scroll container size.
+    Falls back to a plain page screenshot if extraction fails.
+    Returns the debit-minus-credit difference (0.0 = balanced).
+    """
+    diff = 0.0
+    try:
+        rows = frame.evaluate("""
+            () => {
+                const scope = document.querySelector('#DSSJournalEntryGrid') || document;
+                const totals = scope.querySelector('tr.k-footer-template');
+                const result = [];
+                scope.querySelectorAll('tr[role="row"]').forEach(r => {
+                    const tds = r.querySelectorAll('td');
+                    if (tds.length < 4) return;
+                    const clone = tds[1].cloneNode(true);
+                    clone.querySelectorAll('select').forEach(s => s.remove());
+                    const acct    = clone.textContent.trim();
+                    const debit   = tds[2].textContent.trim();
+                    const credit  = tds[3].textContent.trim();
+                    const comment = tds.length > 4 ? tds[4].textContent.trim() : '';
+                    const loc     = tds.length > 5 ? tds[5].textContent.trim() : '';
+                    if (acct) result.push({acct, debit, credit, comment, loc});
+                });
+                // grab footer totals row
+                if (totals) {
+                    const tds = totals.querySelectorAll('td');
+                    result.push({
+                        acct: 'TOTAL',
+                        debit:  tds[2] ? tds[2].textContent.trim() : '',
+                        credit: tds[3] ? tds[3].textContent.trim() : '',
+                        comment: '', loc: '', _total: true
+                    });
+                }
+                return result;
+            }
+        """) or []
+
+        if not rows:
+            raise ValueError("No rows extracted from JE grid")
+
+        # Log as ASCII table for the entity log
+        log.info("JE grid rows (%d):", len([r for r in rows if not r.get("_total")]))
+        log.info("  %-45s %12s %12s  %s", "Account", "Debit", "Credit", "Comment")
+        log.info("  %s", "-" * 85)
+        for r in rows:
+            marker = "→ TOTAL" if r.get("_total") else ""
+            log.info("  %-45s %12s %12s  %s %s",
+                     r["acct"], r["debit"], r["credit"], r["comment"], marker)
+
+        # Build HTML table
+        rows_html = ""
+        for r in rows:
+            bg = "#f0f4ff" if r.get("_total") else ""
+            fw = "bold"    if r.get("_total") else "normal"
+            rows_html += (
+                f'<tr style="background:{bg};font-weight:{fw}">'
+                f'<td>{r["acct"]}</td>'
+                f'<td class="num">{r["debit"]}</td>'
+                f'<td class="num">{r["credit"]}</td>'
+                f'<td>{r["comment"]}</td>'
+                f'<td>{r["loc"]}</td>'
+                f'</tr>\n'
+            )
+
+        # Compute diff and append Difference row (Debit total − Credit total)
+        total_row = next((r for r in rows if r.get("_total")), None)
+        if total_row:
+            try:
+                def _parse_total(s):
+                    return float(re.sub(r"[^0-9.\-]", "", s or "0") or 0)
+                diff = round(_parse_total(total_row["debit"]) - _parse_total(total_row["credit"]), 2)
+                log.info("JE balance difference: %.2f (%s)", diff, "BALANCED" if diff == 0 else "UNBALANCED")
+                diff_color = "#c0392b" if diff != 0 else "#27ae60"
+                diff_str   = f"{diff:,.2f}" if diff != 0 else "0.00  ✓ Balanced"
+                rows_html += (
+                    f'<tr style="background:#fff8e1;font-weight:bold;color:{diff_color}'
+                    f';border-top:2px solid #bbb">'
+                    f'<td>Difference (Debit − Credit)</td>'
+                    f'<td class="num">{diff_str}</td>'
+                    f'<td class="num"></td>'
+                    f'<td></td><td></td>'
+                    f'</tr>\n'
+                )
+            except Exception:
+                pass
+
+        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 13px; margin: 16px; }}
+  h2   {{ margin-bottom: 8px; color: #333; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th   {{ background: #2c5f8a; color: #fff; padding: 6px 10px; text-align: left; }}
+  td   {{ padding: 5px 10px; border-bottom: 1px solid #ddd; }}
+  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  tr:hover td {{ background: #f9f9f9; }}
+</style></head><body>
+<h2>R365 Journal Entry — {path}</h2>
+<table>
+  <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th>
+  <th>Comment</th><th>Location</th></tr></thead>
+  <tbody>{rows_html}</tbody>
+</table></body></html>"""
+
+        # Render via a data: URL in a new page and screenshot it
+        ctx  = frame.page.context
+        tmp  = ctx.new_page()
+        tmp.set_viewport_size({"width": 1200, "height": 800})
+        tmp.goto(f"data:text/html;charset=utf-8,{html.replace('#', '%23')}", wait_until="load")
+        tmp.wait_for_timeout(300)
+        tmp.locator("table").screenshot(path=path)
+        tmp.close()
+        log.info("Full JE table screenshot saved: %s", path)
+
+    except Exception as e:
+        log.warning("JE table screenshot failed (%s) — falling back to page screenshot", e)
+        try:
+            frame.page.screenshot(path=path)
+        except Exception:
+            pass
+    return diff
+
+
+def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png") -> float:
     """
     Fill R365 Journal Entry from Revel data.
 
@@ -248,7 +374,7 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             const scope = document.querySelector('#DSSJournalEntryGrid') || document;
             const rows = Array.from(scope.querySelectorAll('tr[role="row"]'));
             const result = [];
-            const DISCOUNT_ACCOUNTS = ['4500-01', '4500-02', '4500-03', '5000-17'];
+            const DISCOUNT_ACCOUNTS = ['4500-01', '4500-02', '4500-03', '4500-04', '5000-17'];
             rows.forEach(r => {
                 const tds = r.querySelectorAll('td');
                 if (tds.length < 4) return;
@@ -317,33 +443,50 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     tax_exempt_amount = revel_values.get("tax_exempt_amount", 0.0)
     if tax_exempt_field and tax_exempt_amount:
         try:
-            # Check if row already exists
+            # Check if row already exists (catches duplicate-add across re-runs if save persisted)
             existing = _read_je_cell_value(je_frame, "4000-011", tax_exempt_field)
+            log.info("4000-011 current R365 value: %.2f (want %.2f)", existing, tax_exempt_amount)
             if existing == round(tax_exempt_amount, 2):
                 log.info("✅ 4000-011 Food Sales-tax exempt already correct: %.2f", tax_exempt_amount)
             else:
-                log.info("Adding 4000-011 Food Sales-tax exempt: %.2f (%s)", tax_exempt_amount, tax_exempt_field)
-                # Use same pattern as 8000-06: type, Enter to select, Tab to field
-                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
-                acct_input.scroll_into_view_if_needed()
-                acct_input.click()
-                acct_input.fill("4000-011")
-                je_frame.wait_for_timeout(1200)
-                acct_input.press("Enter")
-                je_frame.wait_for_timeout(500)
-                # Tab to Debit field; tax_exempt_field is always "debit"
-                acct_input.press("Tab")  # → Debit field
-                active.keyboard.type(f"{tax_exempt_amount:.2f}")
-                je_frame.wait_for_timeout(300)
-                # Tab to Comment and fill
-                active.keyboard.press("Tab")  # → Credit (skip)
-                active.keyboard.press("Tab")  # → Comment
-                active.keyboard.type("Untaxed Net Sales")
-                je_frame.wait_for_timeout(300)
-                # Click Add — scoped to grid toolbar
-                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
-                je_frame.wait_for_timeout(1000)
-                log.info("✅ 4000-011 row added: %.2f debit 'Untaxed Net Sales'", tax_exempt_amount)
+                # Count how many 4000-011 rows already exist to detect duplicates
+                row_count = je_frame.evaluate("""
+                    () => {
+                        const scope = document.querySelector('#DSSJournalEntryGrid') || document;
+                        return Array.from(scope.querySelectorAll('tr[role="row"]')).filter(r => {
+                            const tds = r.querySelectorAll('td');
+                            if (tds.length < 2) return false;
+                            const clone = tds[1].cloneNode(true);
+                            clone.querySelectorAll('select').forEach(s => s.remove());
+                            return clone.textContent.trim().includes('4000-011');
+                        }).length;
+                    }
+                """)
+                if row_count > 0:
+                    log.warning("⚠️  4000-011 already has %d row(s) but value mismatch — skipping add to avoid duplicates", row_count)
+                else:
+                    log.info("Adding 4000-011 Food Sales-tax exempt: %.2f (%s)", tax_exempt_amount, tax_exempt_field)
+                    # Use same pattern as 8000-06: type, Enter to select, Tab to field
+                    acct_input = je_frame.locator('input[placeholder="Select Account"]').first
+                    acct_input.scroll_into_view_if_needed()
+                    acct_input.click()
+                    acct_input.fill("4000-011")
+                    je_frame.wait_for_timeout(1200)
+                    acct_input.press("Enter")
+                    je_frame.wait_for_timeout(500)
+                    # Tab to Debit field; tax_exempt_field is always "debit"
+                    acct_input.press("Tab")  # → Debit field
+                    active.keyboard.type(f"{tax_exempt_amount:.2f}")
+                    je_frame.wait_for_timeout(300)
+                    # Tab to Comment and fill
+                    active.keyboard.press("Tab")  # → Credit (skip)
+                    active.keyboard.press("Tab")  # → Comment
+                    active.keyboard.type("Untaxed Net Sales")
+                    je_frame.wait_for_timeout(300)
+                    # Click Add — scoped to grid toolbar
+                    je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
+                    je_frame.wait_for_timeout(1000)
+                    log.info("✅ 4000-011 row added: %.2f debit 'Untaxed Net Sales'", tax_exempt_amount)
         except Exception as e:
             log.warning("Could not add 4000-011 tax-exempt row: %s", e)
 
@@ -353,7 +496,14 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     # ── Debits ───────────────────────────────────────────────────────────────
     _reconcile("70250 - Credit Card Fees",                  "credit", revel_values.get("credit_card_fees"))
-    _reconcile("1200-000 - A/R Credit Cards Receivable",    "debit",  revel_values.get("credit_cards_ar"))
+    # CC AR: trust R365's pre-filled value if non-zero — R365 computes tips into this
+    # figure from its own data, which can differ from Revel's credit_tips_total.
+    # Writing Revel's value here causes a net imbalance that cash_over_short can't fix.
+    r365_cc_ar = _read_je_cell_value(je_frame, "1200-000 - A/R Credit Cards Receivable", "debit")
+    if r365_cc_ar:
+        log.info("  SKIP     1200-000 - A/R Credit Cards Receivable  debit = %.2f (trusting R365 pre-filled)", r365_cc_ar)
+    else:
+        _reconcile("1200-000 - A/R Credit Cards Receivable", "debit", revel_values.get("credit_cards_ar"))
     # Discount fields — only write if variance exists (item_discounts > 0)
     # Must target the plain (no-comment) 4500-01 row to avoid overwriting "Gift Card Redeemed" etc.
     if item_discounts:
@@ -368,12 +518,56 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     _reconcile("2301 - Employee Tips Payable",              "debit",  revel_values.get("employee_tips"))
 
     # ── Cash Over/Short ───────────────────────────────────────────────────────
-    # 8000-06 is read-only — R365 auto-calculates it from the JE balance.
-    # We do NOT write to it. Once all other fields are correct the difference
-    # will be zero and R365 will show the correct Cash Over/Short automatically.
-    log.info("Skipping 8000-06 Cash Over/Short — R365 auto-calculates this field")
+    # R365 auto-fills an "Over / Short" row at load time — it is read-only.
+    # We ADD a separate "variance" row via the add-row combobox so the JE balances.
+    cash_over_short      = revel_values.get("cash_over_short", 0.0)
+    cash_over_short_sign = revel_values.get("cash_over_short_sign", "credit")
 
-    active.screenshot(path=screenshot_path)
+    if cash_over_short and cash_over_short > 0:
+        existing_cos = _read_je_cell_value(je_frame, "8000-06", cash_over_short_sign)
+        if existing_cos == cash_over_short:
+            log.info("✅ 8000-06 Cash Over/Short already correct: %.2f", cash_over_short)
+        else:
+            log.info("Adding 8000-06 Cash Over/Short: %.2f (%s)", cash_over_short, cash_over_short_sign)
+            try:
+                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
+                acct_input.scroll_into_view_if_needed()
+                acct_input.click()
+                acct_input.fill("8000-06")
+                je_frame.wait_for_timeout(1200)
+                acct_input.press("Enter")
+                je_frame.wait_for_timeout(500)
+
+                acct_input.press("Tab")           # → Debit field
+                if cash_over_short_sign == "credit":
+                    active.keyboard.press("Tab")  # skip Debit → Credit field
+                active.keyboard.type(f"{cash_over_short:.2f}")
+                je_frame.wait_for_timeout(300)
+
+                if cash_over_short_sign == "debit":
+                    active.keyboard.press("Tab")  # skip Credit field
+                active.keyboard.press("Tab")      # → Comment field
+                active.keyboard.type("variance")
+                je_frame.wait_for_timeout(300)
+
+                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
+                je_frame.wait_for_timeout(1000)
+                log.info("8000-06 Cash Over/Short added: %.2f (%s) with comment 'variance'",
+                         cash_over_short, cash_over_short_sign)
+            except Exception as e:
+                log.warning("Could not add 8000-06 Cash Over/Short: %s", e)
+
+    # Commit any open Kendo grid row-edit before saving — pressing Escape in the
+    # active frame closes the inline editor without discarding the typed value
+    # (Kendo commits on Tab/Enter/Escape when leaving the row).
+    try:
+        je_frame.keyboard.press("Escape")
+        je_frame.wait_for_timeout(500)
+        log.info("Pressed Escape to commit open row edit before save")
+    except Exception:
+        pass
+
+    je_diff = _screenshot_je_grid(je_frame, screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
     # Save the DSS form — Save toolbar is a <li data-testid="saveMenuItem">, not a <button>
@@ -387,10 +581,22 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
             }
         """)
         log.info("Save JS click result: %s", saved)
-        active.wait_for_timeout(3_000)
+        active.wait_for_timeout(4_000)
+
+        # Verify save actually persisted by checking form title / dirty indicator
+        dirty = active.evaluate("""
+            () => {
+                const title = document.title || '';
+                const dirty = document.querySelector('.k-state-dirty, [data-dirty], .unsaved-indicator');
+                return {title: title.slice(0, 80), dirty: !!dirty};
+            }
+        """)
+        log.info("Post-save check — title: %s | dirty indicator: %s", dirty.get("title"), dirty.get("dirty"))
         log.info("DSS form saved")
     except Exception as e:
         log.warning("Save failed: %s", e)
+
+    return je_diff
 
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
@@ -403,8 +609,9 @@ def go_to_daily_sales_summary(
     revel_values: dict | None = None,
     screenshot_path: str = "/tmp/r365_je_after.png",
     before_screenshot_path: str = "/tmp/r365_je_before.png",
-) -> None:
+) -> float:
     log.info("Navigating directly to Daily Sales Summary...")
+    je_diff = 0.0
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
     page.wait_for_timeout(15_000)  # let legacy iframe fully settle
     log.info("DSS page loaded — at: %s", page.url)
@@ -416,7 +623,7 @@ def go_to_daily_sales_summary(
     if not dss_frame:
         log.warning("DSS iframe not found — saving screenshot")
         page.screenshot(path="/tmp/r365_dss_list.png")
-        return
+        return 0.0
 
     if target_date:
         date_str = target_date.strftime("%-m/%-d/%Y")
@@ -481,7 +688,7 @@ def go_to_daily_sales_summary(
                     found_je = True
 
                     if revel_values and found_je:
-                        fill_journal_entry(active, revel_values, screenshot_path=screenshot_path)
+                        je_diff = fill_journal_entry(active, revel_values, screenshot_path=screenshot_path) or 0.0
 
                     break
                 except Exception:
@@ -497,6 +704,8 @@ def go_to_daily_sales_summary(
                 page.screenshot(path="/tmp/r365_dss_list.png")
             except Exception:
                 pass
+
+    return je_diff
 
 
 # ─── Main entry (used by server.py) ──────────────────────────────────────────
@@ -532,7 +741,7 @@ def open_r365_journal_entry(
 
             page = context.pages[0] if context.pages else context.new_page()
             ensure_logged_in_r365(page, context)
-            go_to_daily_sales_summary(
+            je_diff = go_to_daily_sales_summary(
                 page, target_date, context, location_name, revel_values,
                 screenshot_path=f"/tmp/{after_filename}",
                 before_screenshot_path=f"/tmp/{before_filename}",
@@ -545,6 +754,8 @@ def open_r365_journal_entry(
                 "url": url,
                 "before_screenshot_filename": before_filename,
                 "screenshot_filename": after_filename,
+                "je_difference": round(je_diff or 0.0, 2),
+                "je_balanced": (je_diff or 0.0) == 0.0,
             }
 
     except Exception as exc:
