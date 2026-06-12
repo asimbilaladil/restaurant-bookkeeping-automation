@@ -35,7 +35,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.security import check_password_hash
 
-from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
+from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
 from r365 import open_r365_journal_entry
 
 load_dotenv()
@@ -238,10 +238,16 @@ def r365_navigate():
     revel_data = body.get("revel_data") or {}
     revel_values = _extract_revel_values(revel_data)
 
+    # Resolve establishment ID from name for R365 override lookup
+    _est_id = next((k for k, v in ESTABLISHMENT_NAMES.items() if v == location_name), None)
+    r365_name = R365_NAME_OVERRIDES.get(_est_id, location_name) if _est_id else location_name
+    if r365_name != location_name:
+        log.info("R365 name override: '%s' → '%s'", location_name, r365_name)
+
     import concurrent.futures
     with _entity_log(location_name, target_date) as log_path:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(open_r365_journal_entry, target_date, location_name, revel_values)
+            future = ex.submit(open_r365_journal_entry, target_date, r365_name, revel_values)
             result = future.result(timeout=300)
 
     result["log_filename"] = log_path.name
@@ -279,11 +285,14 @@ def r365_reconcile_all():
             name = est.get("name")
             data = est.get("data") or {}
             revel_values = _extract_revel_values(data)
+            r365_name = R365_NAME_OVERRIDES.get(est_id, name)
+            if r365_name != name:
+                log.info("R365 name override for est %s: '%s' → '%s'", est_id, name, r365_name)
 
             event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "running"})
             try:
                 with _entity_log(name, target_date) as log_path:
-                    result = open_r365_journal_entry(target_date, name, revel_values)
+                    result = open_r365_journal_entry(target_date, r365_name, revel_values)
                 if "error" in result:
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                      "status": "error", "error": result["error"],
@@ -299,6 +308,8 @@ def r365_reconcile_all():
                         "before_screenshot_url": f"/screenshots/{before}" if before else None,
                         "screenshot_url": f"/screenshots/{after}" if after else None,
                         "log_url": f"/logs/{log_path.name}",
+                        "je_difference": result.get("je_difference", 0.0),
+                        "je_balanced": result.get("je_balanced", True),
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)

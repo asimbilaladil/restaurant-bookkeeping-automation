@@ -420,6 +420,22 @@
     .prog-fill.error   { width: 100%; background: var(--red); }
     @keyframes prog-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
+    /* ─── Balance badge ─── */
+    .bal-strip {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      margin-top: 9px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 0.69rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .bal-strip.pass { display: flex; background: var(--green-lt); color: var(--green); }
+    .bal-strip.fail { display: flex; background: var(--red-lt);   color: var(--red); }
+
     /* ─── Results table ─── */
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
@@ -936,6 +952,9 @@
       if (p.before_screenshot_url) extra += ` <a href="${p.before_screenshot_url}" target="_blank" class="log-link">Before</a>`;
       if (p.screenshot_url)        extra += ` <a href="${p.screenshot_url}" target="_blank" class="log-link">After</a>`;
       if (p.log_url)               extra += ` <a href="${p.log_url}" target="_blank" class="log-link">Log</a>`;
+      if (p.status === "success" && p.je_balanced !== undefined) {
+        setBalanceBadge(p.establishment_id, p.je_balanced, p.je_difference);
+      }
       addLog(`R365 JE ${name} → ${p.status}${p.error ? ": " + p.error : ""}`, extra);
     }
     if (type === "r365_done")  addLog("All journal entries posted. Reconciliation complete.");
@@ -980,6 +999,22 @@
     else if (status === "error")   state.textContent = `✗ ${(error || "Error").slice(0, 28)}`;
   }
 
+  const _ICON_PASS = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink:0"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M10.97 4.97a.235.235 0 0 0-.02.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-1.071-1.05z"/></svg>`;
+  const _ICON_FAIL = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink:0"><path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></svg>`;
+
+  function setBalanceBadge(id, balanced, diff) {
+    const el = document.getElementById(`bal-${id}`);
+    if (!el) return;
+    if (balanced) {
+      el.className = "bal-strip pass";
+      el.innerHTML = `${_ICON_PASS} JE Balanced`;
+    } else {
+      const amt = Math.abs(diff || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      el.className = "bal-strip fail";
+      el.innerHTML = `${_ICON_FAIL} Off by $${amt}`;
+    }
+  }
+
   // ─── Build grid ───────────────────────────────────────────────────────────
   function buildEstGrid() {
     const grid = document.getElementById("estGrid");
@@ -1015,6 +1050,7 @@
             <div class="prog-track"><div id="r365-fill-${id}" class="prog-fill"></div></div>
           </div>
         </div>
+        <div id="bal-${id}" class="bal-strip"></div>
       `;
       grid.appendChild(d);
     }
