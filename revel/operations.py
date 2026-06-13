@@ -7,6 +7,7 @@ CLI usage:
 """
 
 import os
+import re
 import json
 import logging
 import argparse
@@ -14,7 +15,7 @@ from datetime import date, timedelta
 
 from playwright.sync_api import sync_playwright, BrowserContext
 
-from .establishments import DEFAULT_ESTABLISHMENTS
+from .establishments import DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
 from .session import STATE_FILE, BASE_URL, ensure_logged_in
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,50 @@ def _switch_establishment(context: BrowserContext, establishment_id: int) -> Non
     log.info("  Switched session to est=%d", establishment_id)
 
 
+XLSX_DIR = "/tmp"
+
+
+def _download_establishment_xlsx(
+    context: BrowserContext,
+    establishment_id: int,
+    range_from: str,
+    range_to: str,
+    start_date: date,
+) -> str | None:
+    """
+    Download the Operations Report xlsx for the currently-active establishment
+    and save it under /tmp. Session must already be switched to the establishment.
+    Returns the saved file path, or None on failure.
+    """
+    resp = context.request.get(
+        f"{BASE_URL}/reports/operations/data.xlsx",
+        params={
+            "employee":            "",
+            "online_app":          "",
+            "online_app_type":     "",
+            "online_app_platform": "",
+            "show_unpaid":         1,
+            "show_irregular":      1,
+            "range_from":          range_from,
+            "range_to":            range_to,
+        },
+    )
+    if resp.status != 200:
+        log.warning("  xlsx HTTP %d for establishment %d", resp.status, establishment_id)
+        return None
+
+    location_name = ESTABLISHMENT_NAMES.get(establishment_id, f"est_{establishment_id}")
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", location_name)
+    date_str = start_date.strftime("%Y-%m-%d")
+    path = os.path.join(XLSX_DIR, f"Revel_Operations_{safe_name}_{date_str}.xlsx")
+
+    body = resp.body()
+    with open(path, "wb") as fh:
+        fh.write(body)
+    log.info("  est=%d — xlsx saved (%d bytes): %s", establishment_id, len(body), path)
+    return path
+
+
 def fetch_establishment_report(
     context: BrowserContext,
     establishment_id: int,
@@ -81,16 +126,27 @@ def fetch_establishment_report(
     try:
         data = resp.json()
         log.info("  est=%d — OK (%d bytes)", establishment_id, len(resp.body()))
-        return {
-            "establishment_id": establishment_id,
-            "range_from": range_from,
-            "range_to":   range_to,
-            "error":      None,
-            "data":       data,
-        }
     except Exception as exc:
         log.error("  Failed to parse JSON for establishment %d: %s", establishment_id, exc)
         return {"establishment_id": establishment_id, "error": str(exc), "data": None}
+
+    # Session is still switched to this establishment — download xlsx with same params
+    xlsx_path = None
+    try:
+        xlsx_path = _download_establishment_xlsx(
+            context, establishment_id, range_from, range_to, start_date
+        )
+    except Exception as exc:
+        log.warning("  xlsx download failed for establishment %d: %s", establishment_id, exc)
+
+    return {
+        "establishment_id": establishment_id,
+        "range_from": range_from,
+        "range_to":   range_to,
+        "error":      None,
+        "data":       data,
+        "xlsx_path":  xlsx_path,
+    }
 
 
 def fetch_reports(

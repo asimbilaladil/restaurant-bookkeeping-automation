@@ -247,7 +247,57 @@ def _screenshot_je_grid(frame, path: str) -> float:
     return diff
 
 
-def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png") -> float:
+def _upload_attachment(active, attachment_path: str) -> bool:
+    """
+    Upload a file to the DSS Attachments module by setting the hidden file input
+    that backs #attachmentsModuleInputButton. Returns True on success.
+    """
+    if not attachment_path or not os.path.exists(attachment_path):
+        log.warning("Attachment skipped — path missing or not found: %s", attachment_path)
+        return False
+
+    filename = os.path.basename(attachment_path)
+    # Hunt across frames for the attachments file input
+    for frame in active.frames + [active]:
+        try:
+            has_button = frame.evaluate(
+                "() => !!document.querySelector('#attachmentsModuleInputButton')"
+            )
+            if not has_button:
+                continue
+            log.info("Attachments module found in frame: %s", getattr(frame, "url", ""))
+
+            # Skip if already attached (same filename)
+            already = frame.evaluate(f"""
+                () => {{
+                    const root = document.querySelector('#attachmentsModule, .attachments-list, body') || document.body;
+                    return root.innerText.includes({repr(filename)});
+                }}
+            """)
+            if already:
+                log.info("✅ Attachment '%s' already present — skipping upload", filename)
+                return True
+
+            # Kendo k-upload renders a hidden <input type="file"> next to the button
+            file_input = frame.locator(
+                '#attachmentsModuleInputButton ~ input[type="file"], '
+                '.k-upload input[type="file"], '
+                'input[type="file"]'
+            ).first
+            file_input.wait_for(state="attached", timeout=5_000)
+            file_input.set_input_files(attachment_path)
+            log.info("Attachment file set: %s", attachment_path)
+            frame.wait_for_timeout(3_000)  # let S3 upload complete
+            return True
+        except Exception as e:
+            log.debug("Attachment frame attempt failed (%s): %s", getattr(frame, "url", ""), e)
+            continue
+
+    log.warning("Could not locate attachments file input in any frame")
+    return False
+
+
+def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png", attachment_path: str | None = None) -> float:
     """
     Fill R365 Journal Entry from Revel data.
 
@@ -600,6 +650,13 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     je_diff = _screenshot_je_grid(je_frame, screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
+    # Upload Revel xlsx attachment before saving (so it persists with the JE)
+    if attachment_path:
+        try:
+            _upload_attachment(active, attachment_path)
+        except Exception as e:
+            log.warning("Attachment upload error: %s", e)
+
     # Save the DSS form — Save toolbar is a <li data-testid="saveMenuItem">, not a <button>
     try:
         saved = active.evaluate("""
@@ -639,6 +696,7 @@ def go_to_daily_sales_summary(
     revel_values: dict | None = None,
     screenshot_path: str = "/tmp/r365_je_after.png",
     before_screenshot_path: str = "/tmp/r365_je_before.png",
+    attachment_path: str | None = None,
 ) -> float:
     log.info("Navigating directly to Daily Sales Summary...")
     je_diff = 0.0
@@ -718,7 +776,11 @@ def go_to_daily_sales_summary(
                     found_je = True
 
                     if revel_values and found_je:
-                        je_diff = fill_journal_entry(active, revel_values, screenshot_path=screenshot_path) or 0.0
+                        je_diff = fill_journal_entry(
+                            active, revel_values,
+                            screenshot_path=screenshot_path,
+                            attachment_path=attachment_path,
+                        ) or 0.0
 
                     break
                 except Exception:
@@ -744,6 +806,7 @@ def open_r365_journal_entry(
     target_date: date | None = None,
     location_name: str | None = None,
     revel_values: dict | None = None,
+    attachment_path: str | None = None,
 ) -> dict:
     """
     Launch a headless browser using a persistent profile (so login is remembered),
@@ -775,6 +838,7 @@ def open_r365_journal_entry(
                 page, target_date, context, location_name, revel_values,
                 screenshot_path=f"/tmp/{after_filename}",
                 before_screenshot_path=f"/tmp/{before_filename}",
+                attachment_path=attachment_path,
             )
 
             active_pages = context.pages
