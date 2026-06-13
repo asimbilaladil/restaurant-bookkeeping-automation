@@ -249,10 +249,23 @@ def _screenshot_je_grid(frame, path: str) -> float:
 
 def _upload_attachment(active, attachment_path: str, screenshot_path: str | None = None) -> str:
     """
-    Upload a file to the DSS Attachments module. The button uses Angular's
-    AWS_S3_Uploader.openFileDialog($event) — a custom handler that triggers
-    a native file dialog, so we intercept via expect_file_chooser() (clicking
-    the button) rather than setting files on a static hidden input.
+    Upload a file to the DSS Attachments module.
+
+    The Angular HTML is:
+        <button id="attachmentsModuleInputButton" ng-click="AWS_S3_Uploader.openFileDialog($event)">
+        <div class="hidediv">
+          <input type="file" id="attachmentsModuleInput"
+                 r365-custom-on-change="attachmentsModuleInputChangeHandler(e)">
+        </div>
+
+    The button is a thin wrapper that programmatically clicks the hidden
+    input. We skip the button entirely and:
+      1. set_input_files() directly on #attachmentsModuleInput
+      2. dispatch a native 'change' event so the r365-custom-on-change
+         directive fires attachmentsModuleInputChangeHandler
+      3. invoke Angular $apply() to push the result into the digest cycle
+         (the directive wraps the handler, but belt-and-suspenders)
+      4. poll for the filename to land in AWS_S3_Uploader.files
 
     Returns one of: 'uploaded', 'already_present', 'failed', 'skipped'.
     """
@@ -264,16 +277,20 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
 
     for frame in active.frames + [active]:
         try:
-            has_button = frame.evaluate(
-                "() => !!document.querySelector('#attachmentsModuleInputButton')"
+            has_input = frame.evaluate(
+                "() => !!document.getElementById('attachmentsModuleInput')"
             )
-            if not has_button:
+            if not has_input:
                 continue
-            log.info("Attachments module found in frame: %s", getattr(frame, "url", ""))
+            log.info("Attachments input found in frame: %s", getattr(frame, "url", ""))
 
             already = frame.evaluate(f"""
                 () => {{
-                    const root = document.querySelector('#attachmentsModule, .attachments-list') || document.body;
+                    if (window.AWS_S3_Uploader && Array.isArray(AWS_S3_Uploader.files)) {{
+                        if (AWS_S3_Uploader.files.some(f =>
+                            (f.name || f.fileName || '').includes({repr(filename)}))) return true;
+                    }}
+                    const root = document.querySelector('#attachmentsModule, .col-md-12') || document.body;
                     return root.innerText.includes({repr(filename)});
                 }}
             """)
@@ -283,34 +300,71 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
                     _screenshot_attachments(frame, screenshot_path)
                 return "already_present"
 
-            btn = frame.locator('#attachmentsModuleInputButton').first
-            btn.wait_for(state="visible", timeout=5_000)
-            btn.scroll_into_view_if_needed()
+            # Drive the static hidden input directly. set_input_files works on
+            # hidden inputs (no visibility check needed).
+            file_input = frame.locator('#attachmentsModuleInput')
+            file_input.set_input_files(attachment_path)
+            log.info("Files set on #attachmentsModuleInput: %s", attachment_path)
 
-            # Click the button and intercept the native file dialog Angular triggers.
-            # expect_file_chooser lives on the Page, not the Frame.
-            with active.expect_file_chooser(timeout=10_000) as fc_info:
-                btn.click()
-            fc_info.value.set_files(attachment_path)
-            log.info("File chooser accepted: %s", attachment_path)
+            # Force Angular to notice the file. The r365-custom-on-change
+            # directive listens for change but Playwright's auto-fired change
+            # may not run inside $scope.$apply — do it explicitly.
+            fire_result = frame.evaluate("""
+                () => {
+                    const inp = document.getElementById('attachmentsModuleInput');
+                    if (!inp) return 'no-input';
+                    const evt = new Event('change', {bubbles: true, cancelable: true});
+                    inp.dispatchEvent(evt);
+                    if (window.angular) {
+                        try {
+                            const scope = angular.element(inp).scope();
+                            if (scope && scope.$apply) {
+                                if (scope.$root && scope.$root.$$phase) return 'change+digest-in-progress';
+                                scope.$apply();
+                                return 'change+apply';
+                            }
+                        } catch (e) { return 'change+apply-error: ' + e.message; }
+                    }
+                    return 'change-only';
+                }
+            """)
+            log.info("Change fired: %s", fire_result)
 
-            # Poll the attachments DOM for the filename — confirms the S3 PUT completed
-            # and the UI rendered the attachment row.
-            for i in range(30):
+            # Poll for filename to land in AWS_S3_Uploader.files or the DOM.
+            # S3 PUTs typically complete in 1-5s but allow up to 45s for slow conn.
+            for i in range(45):
                 frame.wait_for_timeout(1_000)
                 landed = frame.evaluate(f"""
                     () => {{
-                        const root = document.querySelector('#attachmentsModule, .attachments-list') || document.body;
-                        return root.innerText.includes({repr(filename)});
+                        if (window.AWS_S3_Uploader && Array.isArray(AWS_S3_Uploader.files)) {{
+                            if (AWS_S3_Uploader.files.some(f =>
+                                (f.name || f.fileName || '').includes({repr(filename)}))) return 'aws-files';
+                        }}
+                        const root = document.querySelector('#attachmentsModule, .col-md-12') || document.body;
+                        return root.innerText.includes({repr(filename)}) ? 'dom' : null;
                     }}
                 """)
                 if landed:
-                    log.info("✅ Attachment confirmed in R365 DOM after %ds: %s", i + 1, filename)
+                    log.info("✅ Attachment confirmed (%s) after %ds: %s", landed, i + 1, filename)
                     if screenshot_path:
                         _screenshot_attachments(frame, screenshot_path)
                     return "uploaded"
 
-            log.warning("⚠️  Attachment '%s' did not appear in DOM after 30s", filename)
+            log.warning("⚠️  Attachment '%s' not in AWS_S3_Uploader.files or DOM after 45s", filename)
+            # Dump AWS_S3_Uploader state for diagnosis
+            try:
+                state = frame.evaluate("""
+                    () => {
+                        if (!window.AWS_S3_Uploader) return 'no AWS_S3_Uploader';
+                        return {
+                            status: AWS_S3_Uploader.status,
+                            files: (AWS_S3_Uploader.files || []).map(f => f.name || f.fileName || JSON.stringify(f)),
+                        };
+                    }
+                """)
+                log.warning("AWS_S3_Uploader state: %s", state)
+            except Exception:
+                pass
             if screenshot_path:
                 _screenshot_attachments(frame, screenshot_path)
             return "failed"
@@ -318,15 +372,19 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
             log.warning("Attachment frame attempt failed (%s): %s", getattr(frame, "url", ""), e)
             continue
 
-    log.warning("Could not locate #attachmentsModuleInputButton in any frame")
+    log.warning("Could not locate #attachmentsModuleInput in any frame")
     return "failed"
 
 
 def _screenshot_attachments(frame, path: str) -> None:
     """Screenshot the attachments module area for visual proof."""
     try:
-        loc = frame.locator('#attachmentsModule').first
+        # The button + thumbnail row both live under the same col-md-12 wrapper
+        loc = frame.locator(
+            '#attachmentsModule, .col-md-12:has(#attachmentsModuleInputButton)'
+        ).first
         if loc.count() > 0:
+            loc.scroll_into_view_if_needed()
             loc.screenshot(path=path)
         else:
             frame.locator('#attachmentsModuleInputButton').first.screenshot(path=path)
