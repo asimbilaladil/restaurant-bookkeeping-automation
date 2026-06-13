@@ -426,8 +426,27 @@
 <!-- ─── Main ─── -->
 <div class="container">
 
+  <!-- R365 Report Viewer launcher -->
+  <div class="card controls-card" style="flex-direction:column;align-items:flex-start;gap:14px;margin-bottom:20px;">
+    <div>
+      <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:4px;">Step 1 — Navigate R365</div>
+      <div style="font-size:0.82rem;color:var(--sub);margin-bottom:12px;">Open a browser session, log into Restaurant365, and go to the Report Viewer page.</div>
+      <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()" style="background:#7c3aed;box-shadow:0 1px 2px rgba(124,58,237,0.25),0 4px 12px rgba(124,58,237,0.2);">
+        <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+        </svg>
+        Open Report Viewer in R365
+      </button>
+    </div>
+    <div id="navStatus" style="display:none;width:100%;">
+      <div style="background:#0d1526;border-radius:8px;padding:12px 16px;font-family:'SF Mono','Fira Mono',monospace;font-size:0.76rem;color:#8594ae;" id="navLog">Launching…</div>
+      <img id="navScreenshot" src="" alt="R365 screenshot" style="display:none;margin-top:12px;border-radius:8px;border:1px solid var(--border);width:100%;" />
+    </div>
+  </div>
+
   <!-- Controls -->
   <div class="card controls-card">
+    <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0;align-self:flex-end;padding-bottom:2px;">Step 2 — Run Reconciliation</div>
     <div class="field">
       <label>Date</label>
       <input type="date" id="dateInput" />
@@ -527,6 +546,47 @@
 </div>
 
 <script>
+  // ─── Report Viewer navigation ────────────────────────────────────────────────
+  async function openReportViewer() {
+    const btn = document.getElementById('btnNav');
+    const statusDiv = document.getElementById('navStatus');
+    const logEl = document.getElementById('navLog');
+    const imgEl = document.getElementById('navScreenshot');
+
+    btn.disabled = true;
+    btn.textContent = 'Launching…';
+    statusDiv.style.display = 'block';
+    imgEl.style.display = 'none';
+    logEl.style.color = '#93c5fd';
+    logEl.textContent = 'Logging into R365 and navigating to Report Viewer…';
+
+    try {
+      const resp = await fetch('/api/r365/report-viewer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        logEl.style.color = '#f87171';
+        logEl.textContent = 'Error: ' + (data.error || 'Unknown error');
+      } else {
+        logEl.style.color = '#34d399';
+        logEl.textContent = 'Navigated to: ' + data.url;
+        if (data.screenshot_filename) {
+          imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
+          imgEl.style.display = 'block';
+        }
+      }
+    } catch (e) {
+      logEl.style.color = '#f87171';
+      logEl.textContent = 'Request failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Open Report Viewer in R365`;
+    }
+  }
+
   // ─── State ───────────────────────────────────────────────────────────────────
   let establishments = {};   // { id: name }
   let results = {};          // { id: {...} }

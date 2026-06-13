@@ -45,8 +45,12 @@ def ensure_logged_in_r365(page: Page, context) -> None:
     page.wait_for_timeout(3_000)
     _dismiss_chrome_dialogs(page)
 
-    if "identity.restaurant365.com" in page.url or "login" in page.url.lower():
+    if ("identity.restaurant365.com" in page.url
+            or "login" in page.url.lower()
+            or "logout" in page.url.lower()):
         log.info("Not logged in — logging in now (first time or session expired)")
+        page.goto(R365_URL, timeout=60_000, wait_until="domcontentloaded")
+        page.wait_for_timeout(2_000)
         login_r365(page)
     else:
         log.info("Already logged in — at %s", page.url)

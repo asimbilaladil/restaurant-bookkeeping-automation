@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 from werkzeug.security import check_password_hash
 
 from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
-from r365 import open_r365_journal_entry
+from r365 import open_r365_journal_entry, open_report_viewer
 
 load_dotenv()
 
@@ -124,6 +124,7 @@ def index():
 @login_required
 def receivable_reconciliation():
     return send_from_directory(".", "receivable-reconciliation.html")
+
 
 
 @app.route("/api/establishments")
@@ -257,6 +258,22 @@ def r365_navigate():
             result = future.result(timeout=300)
 
     result["log_filename"] = log_path.name
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route("/api/r365/report-viewer", methods=["POST"])
+@login_required
+def r365_report_viewer():
+    """
+    Opens R365, logs in, navigates to the Report Viewer page, and returns a screenshot.
+    """
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(open_report_viewer)
+        result = future.result(timeout=120)
+
     if "error" in result:
         return jsonify(result), 500
     return jsonify(result)
