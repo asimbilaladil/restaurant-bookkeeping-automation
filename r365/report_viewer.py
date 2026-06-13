@@ -60,7 +60,7 @@ def _find_customize_ctx(page):
     return None, {}
 
 
-def open_report_viewer() -> dict:
+def open_report_viewer(legal_entity: str = "LCF Airtex LLC") -> dict:
     with sync_playwright() as pw:
         browser = pw.chromium.launch_persistent_context(
             PROFILE_DIR,
@@ -482,6 +482,139 @@ def open_report_viewer() -> dict:
                 }
             """)
             log.info("OK: %s", ok_result)
+            page.wait_for_timeout(2_500)
+
+            # ── Step 12: open Legal Entity filter on Customize panel ─────────
+            # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
+            # → "Legal Entity" option (the option uses ng-click=wantedItem
+            # without the `true` flag, so it's a single-select).
+            log.info("Opening Legal Entity filter")
+            fbtn = ctx.evaluate("""
+                () => {
+                    const btns = Array.from(document.querySelectorAll('button'))
+                        .filter(b => b.offsetParent !== null);
+                    let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
+                    if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
+                    target = btns.find(b => {
+                        const t = b.textContent.trim().toUpperCase();
+                        return t === 'FILTER BY' || t.startsWith('FILTER BY');
+                    });
+                    if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
+                    return 'not-found';
+                }
+            """)
+            log.info("Filter button: %s", fbtn)
+            page.wait_for_timeout(2_000)
+
+            if fbtn == "filter-by-clicked":
+                log.info("Clicking 'Legal Entity' option")
+                le = ctx.evaluate("""
+                    () => {
+                        const btn = document.querySelector('button[aria-label="Legal Entity"]');
+                        if (!btn) return 'not-found';
+                        btn.scrollIntoView({block:'center'});
+                        btn.click();
+                        return 'legal-entity-clicked';
+                    }
+                """)
+                log.info("Legal Entity option: %s", le)
+                page.wait_for_timeout(2_500)
+
+            # ── Step 12c: open the FILTER multi-select dialog ─────────────────
+            # Filter By only SETS the filter type; the actual entity selection
+            # lives behind a separate "Filter" dropdown (id="Filter" on the
+            # Customize panel). We must click it to open the entity dialog.
+            log.info("Opening Filter (entity multi-select) dialog")
+            open_filter = ctx.evaluate("""
+                () => {
+                    // Click the button inside the Filter parameter row
+                    const filterRow = document.getElementById('Filter');
+                    if (filterRow) {
+                        const btn = filterRow.querySelector('button');
+                        if (btn) {
+                            btn.scrollIntoView({block:'center'});
+                            btn.click();
+                            return 'filter-button-clicked';
+                        }
+                        // Section fallback (parameterMenuClick)
+                        const section = filterRow.querySelector('section[role="button"]');
+                        if (section) { section.click(); return 'filter-section-clicked'; }
+                    }
+                    return 'filter-not-found';
+                }
+            """)
+            log.info("Filter open: %s", open_filter)
+            page.wait_for_timeout(2_500)
+
+            # ── Step 13: clear any existing legal entity selections ──────────
+            log.info("Clearing legal entity selections (Select All x2)")
+            for i in (1, 2):
+                res = ctx.evaluate("""
+                    () => {
+                        const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
+                        if (!sa) return 'select-all-not-found';
+                        sa.scrollIntoView({block:'center'});
+                        sa.click();
+                        return 'select-all-clicked aria-checked=' + sa.getAttribute('aria-checked');
+                    }
+                """)
+                log.info("Entity Select All click %d: %s", i, res)
+                page.wait_for_timeout(1_000)
+
+            # ── Step 14: type the chosen legal entity in search input ─────────
+            LE_SEARCH = legal_entity
+            log.info("Typing %r in entity search", LE_SEARCH)
+            try:
+                if ctx != page:
+                    inp = ctx.locator('input:not([disabled]):not([type="hidden"])').last
+                else:
+                    inp = page.locator('input:not([disabled]):not([type="hidden"])').last
+                inp.click(timeout=5_000)
+                inp.fill("")
+                inp.type(LE_SEARCH, delay=60)
+            except Exception as e:
+                log.warning("Entity search input failed (%s) — keyboard fallback", e)
+                page.keyboard.type(LE_SEARCH, delay=60)
+            page.wait_for_timeout(2_500)
+
+            # ── Step 15: click the entity's wrapper button ───────────────────
+            log.info("Selecting %r", legal_entity)
+            le_click = ctx.evaluate(f"""
+                () => {{
+                    const label = {repr(legal_entity)};
+                    const btn = document.querySelector(`button[aria-label="${{label}}"]`);
+                    if (btn) {{
+                        btn.scrollIntoView({{block:'center'}});
+                        btn.click();
+                        return 'wrapper-button-clicked';
+                    }}
+                    const cb = document.querySelector(
+                        `md-checkbox[aria-label="${{label}} "], ` +
+                        `md-checkbox[aria-label="${{label}}"]`
+                    );
+                    if (cb) {{ cb.scrollIntoView({{block:'center'}}); cb.click(); return 'md-checkbox-clicked'; }}
+                    return 'not-found';
+                }}
+            """)
+            log.info("Entity click (%s): %s", legal_entity, le_click)
+            page.wait_for_timeout(1_500)
+
+            # ── Step 16: click OK on entity dialog ───────────────────────────
+            log.info("Clicking OK on entity dialog")
+            le_ok = ctx.evaluate(r"""
+                () => {
+                    const ok = document.querySelector("button[ng-click=\"closeDialog('OK')\"]");
+                    if (ok) { ok.scrollIntoView({block:'center'}); ok.click(); return 'ok-ng-click'; }
+                    const actions = document.querySelector('md-dialog-actions');
+                    if (actions) {
+                        const btn = Array.from(actions.querySelectorAll('button'))
+                            .find(b => b.textContent.trim().toUpperCase() === 'OK');
+                        if (btn) { btn.click(); return 'ok-dialog-actions'; }
+                    }
+                    return 'ok-not-found';
+                }
+            """)
+            log.info("Entity OK: %s", le_ok)
             page.wait_for_timeout(2_000)
 
             screenshot_name = f"report_viewer_{uuid.uuid4().hex[:8]}.png"

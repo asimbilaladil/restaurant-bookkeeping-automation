@@ -268,11 +268,16 @@ def r365_navigate():
 def r365_report_viewer():
     """
     Opens R365, logs in, navigates to the Report Viewer page, and returns a screenshot.
+    Body: { "legal_entity": "LCF Airtex LLC" }
     """
+    body = request.get_json(silent=True) or {}
+    legal_entity = (body.get("legal_entity") or "").strip() or "LCF Airtex LLC"
+    log.info("Report Viewer requested for legal_entity=%r (body=%r)", legal_entity, body)
+
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(open_report_viewer)
-        result = future.result(timeout=120)
+        future = ex.submit(open_report_viewer, legal_entity)
+        result = future.result(timeout=300)
 
     if "error" in result:
         return jsonify(result), 500
