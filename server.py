@@ -330,6 +330,7 @@ def r365_reconcile_all():
                 else:
                     before = result.get("before_screenshot_filename")
                     after  = result.get("screenshot_filename")
+                    attach_shot = result.get("attachment_screenshot_filename")
                     event_queue.put({
                         "type": "r365_progress",
                         "establishment_id": est_id,
@@ -337,6 +338,8 @@ def r365_reconcile_all():
                         "r365_url": result.get("url"),
                         "before_screenshot_url": f"/screenshots/{before}" if before else None,
                         "screenshot_url": f"/screenshots/{after}" if after else None,
+                        "attachment_screenshot_url": f"/screenshots/{attach_shot}" if attach_shot else None,
+                        "attachment_status": result.get("attachment_status", "skipped"),
                         "log_url": f"/logs/{log_path.name}",
                         "je_difference": result.get("je_difference", 0.0),
                         "je_balanced": result.get("je_balanced", True),

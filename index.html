@@ -951,6 +951,14 @@
       if (p.r365_url)              extra += ` <a href="${p.r365_url}" target="_blank" rel="noopener" class="log-link">Open in R365</a>`;
       if (p.before_screenshot_url) extra += ` <a href="${p.before_screenshot_url}" target="_blank" class="log-link">Before</a>`;
       if (p.screenshot_url)        extra += ` <a href="${p.screenshot_url}" target="_blank" class="log-link">After</a>`;
+      if (p.attachment_screenshot_url) {
+        const label = p.attachment_status === "uploaded" ? "Attached ✓"
+                    : p.attachment_status === "already_present" ? "Attached (existing)"
+                    : "Attach ✗";
+        extra += ` <a href="${p.attachment_screenshot_url}" target="_blank" class="log-link">${label}</a>`;
+      } else if (p.attachment_status && p.attachment_status !== "skipped") {
+        extra += ` <span class="log-link">Attach: ${p.attachment_status}</span>`;
+      }
       if (p.log_url)               extra += ` <a href="${p.log_url}" target="_blank" class="log-link">Log</a>`;
       if (p.status === "success" && p.je_balanced !== undefined) {
         setBalanceBadge(p.establishment_id, p.je_balanced, p.je_difference);

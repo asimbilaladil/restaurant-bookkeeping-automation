@@ -247,17 +247,21 @@ def _screenshot_je_grid(frame, path: str) -> float:
     return diff
 
 
-def _upload_attachment(active, attachment_path: str) -> bool:
+def _upload_attachment(active, attachment_path: str, screenshot_path: str | None = None) -> str:
     """
-    Upload a file to the DSS Attachments module by setting the hidden file input
-    that backs #attachmentsModuleInputButton. Returns True on success.
+    Upload a file to the DSS Attachments module. The button uses Angular's
+    AWS_S3_Uploader.openFileDialog($event) — a custom handler that triggers
+    a native file dialog, so we intercept via expect_file_chooser() (clicking
+    the button) rather than setting files on a static hidden input.
+
+    Returns one of: 'uploaded', 'already_present', 'failed', 'skipped'.
     """
     if not attachment_path or not os.path.exists(attachment_path):
         log.warning("Attachment skipped — path missing or not found: %s", attachment_path)
-        return False
+        return "skipped"
 
     filename = os.path.basename(attachment_path)
-    # Hunt across frames for the attachments file input
+
     for frame in active.frames + [active]:
         try:
             has_button = frame.evaluate(
@@ -267,37 +271,77 @@ def _upload_attachment(active, attachment_path: str) -> bool:
                 continue
             log.info("Attachments module found in frame: %s", getattr(frame, "url", ""))
 
-            # Skip if already attached (same filename)
             already = frame.evaluate(f"""
                 () => {{
-                    const root = document.querySelector('#attachmentsModule, .attachments-list, body') || document.body;
+                    const root = document.querySelector('#attachmentsModule, .attachments-list') || document.body;
                     return root.innerText.includes({repr(filename)});
                 }}
             """)
             if already:
                 log.info("✅ Attachment '%s' already present — skipping upload", filename)
-                return True
+                if screenshot_path:
+                    _screenshot_attachments(frame, screenshot_path)
+                return "already_present"
 
-            # Kendo k-upload renders a hidden <input type="file"> next to the button
-            file_input = frame.locator(
-                '#attachmentsModuleInputButton ~ input[type="file"], '
-                '.k-upload input[type="file"], '
-                'input[type="file"]'
-            ).first
-            file_input.wait_for(state="attached", timeout=5_000)
-            file_input.set_input_files(attachment_path)
-            log.info("Attachment file set: %s", attachment_path)
-            frame.wait_for_timeout(3_000)  # let S3 upload complete
-            return True
+            btn = frame.locator('#attachmentsModuleInputButton').first
+            btn.wait_for(state="visible", timeout=5_000)
+            btn.scroll_into_view_if_needed()
+
+            # Click the button and intercept the native file dialog Angular triggers.
+            # expect_file_chooser lives on the Page, not the Frame.
+            with active.expect_file_chooser(timeout=10_000) as fc_info:
+                btn.click()
+            fc_info.value.set_files(attachment_path)
+            log.info("File chooser accepted: %s", attachment_path)
+
+            # Poll the attachments DOM for the filename — confirms the S3 PUT completed
+            # and the UI rendered the attachment row.
+            for i in range(30):
+                frame.wait_for_timeout(1_000)
+                landed = frame.evaluate(f"""
+                    () => {{
+                        const root = document.querySelector('#attachmentsModule, .attachments-list') || document.body;
+                        return root.innerText.includes({repr(filename)});
+                    }}
+                """)
+                if landed:
+                    log.info("✅ Attachment confirmed in R365 DOM after %ds: %s", i + 1, filename)
+                    if screenshot_path:
+                        _screenshot_attachments(frame, screenshot_path)
+                    return "uploaded"
+
+            log.warning("⚠️  Attachment '%s' did not appear in DOM after 30s", filename)
+            if screenshot_path:
+                _screenshot_attachments(frame, screenshot_path)
+            return "failed"
         except Exception as e:
-            log.debug("Attachment frame attempt failed (%s): %s", getattr(frame, "url", ""), e)
+            log.warning("Attachment frame attempt failed (%s): %s", getattr(frame, "url", ""), e)
             continue
 
-    log.warning("Could not locate attachments file input in any frame")
-    return False
+    log.warning("Could not locate #attachmentsModuleInputButton in any frame")
+    return "failed"
 
 
-def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/r365_je_filled.png", attachment_path: str | None = None) -> float:
+def _screenshot_attachments(frame, path: str) -> None:
+    """Screenshot the attachments module area for visual proof."""
+    try:
+        loc = frame.locator('#attachmentsModule').first
+        if loc.count() > 0:
+            loc.screenshot(path=path)
+        else:
+            frame.locator('#attachmentsModuleInputButton').first.screenshot(path=path)
+        log.info("Attachments screenshot saved: %s", path)
+    except Exception as e:
+        log.warning("Could not screenshot attachments area: %s", e)
+
+
+def fill_journal_entry(
+    active,
+    revel_values: dict,
+    screenshot_path: str = "/tmp/r365_je_filled.png",
+    attachment_path: str | None = None,
+    attachment_screenshot_path: str | None = None,
+) -> tuple[float, str]:
     """
     Fill R365 Journal Entry from Revel data.
 
@@ -651,11 +695,16 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
     # Upload Revel xlsx attachment before saving (so it persists with the JE)
+    attachment_status = "skipped"
     if attachment_path:
         try:
-            _upload_attachment(active, attachment_path)
+            attachment_status = _upload_attachment(
+                active, attachment_path,
+                screenshot_path=attachment_screenshot_path,
+            )
         except Exception as e:
             log.warning("Attachment upload error: %s", e)
+            attachment_status = "failed"
 
     # Save the DSS form — Save toolbar is a <li data-testid="saveMenuItem">, not a <button>
     try:
@@ -683,7 +732,7 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
     except Exception as e:
         log.warning("Save failed: %s", e)
 
-    return je_diff
+    return je_diff, attachment_status
 
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
@@ -697,9 +746,11 @@ def go_to_daily_sales_summary(
     screenshot_path: str = "/tmp/r365_je_after.png",
     before_screenshot_path: str = "/tmp/r365_je_before.png",
     attachment_path: str | None = None,
-) -> float:
+    attachment_screenshot_path: str | None = None,
+) -> tuple[float, str]:
     log.info("Navigating directly to Daily Sales Summary...")
     je_diff = 0.0
+    attachment_status = "skipped"
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
     page.wait_for_timeout(15_000)  # let legacy iframe fully settle
     log.info("DSS page loaded — at: %s", page.url)
@@ -711,7 +762,7 @@ def go_to_daily_sales_summary(
     if not dss_frame:
         log.warning("DSS iframe not found — saving screenshot")
         page.screenshot(path="/tmp/r365_dss_list.png")
-        return 0.0
+        return 0.0, attachment_status
 
     if target_date:
         date_str = target_date.strftime("%-m/%-d/%Y")
@@ -776,11 +827,13 @@ def go_to_daily_sales_summary(
                     found_je = True
 
                     if revel_values and found_je:
-                        je_diff = fill_journal_entry(
+                        je_diff, attachment_status = fill_journal_entry(
                             active, revel_values,
                             screenshot_path=screenshot_path,
                             attachment_path=attachment_path,
-                        ) or 0.0
+                            attachment_screenshot_path=attachment_screenshot_path,
+                        )
+                        je_diff = je_diff or 0.0
 
                     break
                 except Exception:
@@ -797,7 +850,7 @@ def go_to_daily_sales_summary(
             except Exception:
                 pass
 
-    return je_diff
+    return je_diff, attachment_status
 
 
 # ─── Main entry (used by server.py) ──────────────────────────────────────────
@@ -820,8 +873,9 @@ def open_r365_journal_entry(
 
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", location_name or "unknown")
     date_str = target_date.strftime("%Y-%m-%d") if target_date else "nodate"
-    before_filename = f"r365_je_{safe_name}_{date_str}_before.png"
-    after_filename  = f"r365_je_{safe_name}_{date_str}_after.png"
+    before_filename     = f"r365_je_{safe_name}_{date_str}_before.png"
+    after_filename      = f"r365_je_{safe_name}_{date_str}_after.png"
+    attachment_filename = f"r365_attach_{safe_name}_{date_str}.png"
 
     try:
         with sync_playwright() as p:
@@ -834,11 +888,12 @@ def open_r365_journal_entry(
 
             page = context.pages[0] if context.pages else context.new_page()
             ensure_logged_in_r365(page, context)
-            je_diff = go_to_daily_sales_summary(
+            je_diff, attachment_status = go_to_daily_sales_summary(
                 page, target_date, context, location_name, revel_values,
                 screenshot_path=f"/tmp/{after_filename}",
                 before_screenshot_path=f"/tmp/{before_filename}",
                 attachment_path=attachment_path,
+                attachment_screenshot_path=f"/tmp/{attachment_filename}",
             )
 
             active_pages = context.pages
@@ -848,6 +903,8 @@ def open_r365_journal_entry(
                 "url": url,
                 "before_screenshot_filename": before_filename,
                 "screenshot_filename": after_filename,
+                "attachment_screenshot_filename": attachment_filename if attachment_status != "skipped" else None,
+                "attachment_status": attachment_status,
                 "je_difference": round(je_diff or 0.0, 2),
                 "je_balanced": (je_diff or 0.0) == 0.0,
             }
