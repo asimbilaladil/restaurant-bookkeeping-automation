@@ -384,6 +384,8 @@ def _extract_revel_values(data: dict) -> dict:
     beverage_sales = f(class_map.get("2. Beverage", {}).get("taxable_sales", 0))
     del_row      = class_map.get("5. Delivery - Food", {})
     delivery_sales = round(f(del_row.get("taxable_sales", 0)) + f(del_row.get("untaxable_sales", 0)), 2)
+    other_row    = class_map.get("Unknown Class", {})
+    other_sales  = round(f(other_row.get("taxable_sales", 0)) + f(other_row.get("untaxable_sales", 0)), 2)
 
     # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
     net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
@@ -519,6 +521,7 @@ def _extract_revel_values(data: dict) -> dict:
         "tax_exempt_amount":    tax_exempt_amount,
         "beverage_sales":       beverage_sales,
         "delivery_food_sales":  delivery_sales,
+        "other_sales":          other_sales,
         "sales_tax":            tax_total,
         "credit_cards_ar":      credit_cards_ar,
         "uber_eats":            uber_eats,

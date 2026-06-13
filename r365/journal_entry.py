@@ -255,6 +255,7 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
         food_sales              → 4000-01 Food Sales (Credit)
         beverage_sales          → 4000-02 Beverage Sales (Credit)
         delivery_food_sales     → 4000-08 Food Delivery Sales (Credit)
+        other_sales             → 4000-07 Other Sales (Credit, add row if non-zero)
         sales_tax               → 2240-000 Sales Tax Payable (Credit)
         credit_cards_ar         → 1200-000 A/R Credit Cards Receivable (Debit)
         uber_eats               → 1245-12 A/R-UberEats (Debit)
@@ -492,6 +493,42 @@ def fill_journal_entry(active, revel_values: dict, screenshot_path: str = "/tmp/
 
     _reconcile("4000-02 - Beverage Sales",        "credit", revel_values.get("beverage_sales"))
     _reconcile("4000-08 - Food Delivery Sales",   "credit", revel_values.get("delivery_food_sales"))
+
+    # ── Other Sales (4000-07) ─────────────────────────────────────────────────
+    # Add a new row when Revel "Unknown Class" taxable_sales is non-zero.
+    other_sales = round(float(revel_values.get("other_sales") or 0), 2)
+    if other_sales:
+        try:
+            existing = _read_je_cell_value(je_frame, "4000-07", "credit")
+            log.info("4000-07 current R365 value: %.2f (want %.2f)", existing, other_sales)
+            if existing == other_sales:
+                log.info("✅ 4000-07 Other Sales already correct: %.2f", other_sales)
+            elif existing:
+                # Row exists but value differs — update in-place
+                _fill_je_cell(je_frame, "4000-07", "credit", other_sales)
+                log.info("✅ 4000-07 Other Sales updated: %.2f", other_sales)
+            else:
+                # Row not in grid yet — add via Select Account input
+                log.info("Adding 4000-07 Other Sales: %.2f (credit)", other_sales)
+                acct_input = je_frame.locator('input[placeholder="Select Account"]').first
+                acct_input.scroll_into_view_if_needed()
+                acct_input.click()
+                acct_input.fill("4000-07")
+                je_frame.wait_for_timeout(1200)
+                acct_input.press("Enter")
+                je_frame.wait_for_timeout(500)
+                acct_input.press("Tab")   # → Debit (skip)
+                active.keyboard.press("Tab")  # → Credit field
+                active.keyboard.type(f"{other_sales:.2f}")
+                je_frame.wait_for_timeout(300)
+                # Tab past Comment (leave empty) then click Add
+                active.keyboard.press("Tab")
+                je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
+                je_frame.wait_for_timeout(1000)
+                log.info("✅ 4000-07 Other Sales row added: %.2f credit", other_sales)
+        except Exception as e:
+            log.warning("Could not add 4000-07 Other Sales row: %s", e)
+
     _reconcile("2240-000 - Sales Tax Payable",    "credit", revel_values.get("sales_tax"))
 
     # ── Debits ───────────────────────────────────────────────────────────────
