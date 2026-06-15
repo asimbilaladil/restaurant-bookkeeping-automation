@@ -749,31 +749,53 @@ def open_report_viewer(
             log.info("Export click: %s", export_click)
             page.wait_for_timeout(2_500)
 
+            # Wait for the export dialog to finish loading (spinner disappears)
+            page.wait_for_timeout(3_500)
             export_dialog_shot = _snap(page, "export_dialog")
-            _emit("Export dialog opened — selecting format…", export_dialog_shot)
+            _emit("Export dialog loaded — selecting Excel format…", export_dialog_shot)
 
-            # ── Step 22: Select Excel format if a picker is present ───────────
+            # ── Step 22: Click the Excel radio button ─────────────────────────
+            # Dialog has "File Options: (•) PDF  ( ) Excel" — PDF is default.
+            # We click the Excel label/radio to switch.
             for ec in _eval_all:
                 fmt = ec.evaluate("""
                     () => {
-                        for (const sel of document.querySelectorAll('select')) {
-                            const opt = Array.from(sel.options).find(o => /excel/i.test(o.text));
-                            if (opt) {
-                                sel.value = opt.value;
-                                sel.dispatchEvent(new Event('change', {bubbles: true}));
-                                return 'excel-selected: ' + opt.text;
+                        // Prefer clicking the <label> that wraps or is adjacent to the Excel radio
+                        const labels = Array.from(document.querySelectorAll('label'));
+                        const excelLabel = labels.find(l => l.textContent.trim() === 'Excel'
+                                                            && l.offsetParent !== null);
+                        if (excelLabel) { excelLabel.click(); return 'excel-label-clicked'; }
+
+                        // Try the radio input whose sibling/parent text is Excel
+                        const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+                        for (const r of radios) {
+                            const container = r.closest('label, span, div');
+                            if (container && /^excel$/i.test(container.textContent.trim())) {
+                                r.click(); return 'excel-radio-clicked';
+                            }
+                            // sibling span/text
+                            const next = r.nextSibling;
+                            if (next && /excel/i.test(next.textContent || '')) {
+                                r.click(); return 'excel-radio-sibling';
                             }
                         }
-                        const li = Array.from(document.querySelectorAll('option, [role="option"], li'))
-                            .find(o => /excel/i.test(o.textContent) && o.offsetParent !== null);
-                        if (li) { li.click(); return 'li-clicked: ' + li.textContent.trim(); }
-                        return 'no-picker';
+
+                        // Last resort: any visible element whose sole text is "Excel"
+                        const el = Array.from(document.querySelectorAll('*'))
+                            .find(e => e.children.length === 0
+                                    && e.textContent.trim() === 'Excel'
+                                    && e.offsetParent !== null);
+                        if (el) { el.click(); return 'excel-text-element'; }
+                        return 'excel-not-found';
                     }
                 """)
-                log.info("Format select: %s", fmt)
+                log.info("Excel radio: %s", fmt)
+                if fmt != "excel-not-found":
+                    break
             page.wait_for_timeout(600)
+            _emit("Excel selected — clicking Export…", _snap(page, "excel_selected"))
 
-            # ── Step 23: Confirm dialog + capture the file download ───────────
+            # ── Step 23: Click the EXPORT button + capture download ───────────
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             download_filename = None
             try:
@@ -782,19 +804,20 @@ def open_report_viewer(
                     for ec in _eval_all:
                         ok_r = ec.evaluate(r"""
                             () => {
-                                const dialogs = Array.from(
-                                    document.querySelectorAll('md-dialog, [role="dialog"]')
-                                ).filter(d => d.offsetParent !== null);
-                                for (const dlg of dialogs) {
-                                    const btn = Array.from(dlg.querySelectorAll('button'))
-                                        .find(b => /ok|export|run|download/i.test(b.textContent.trim())
-                                                   && !b.disabled);
-                                    if (btn) { btn.click(); return 'dialog-btn: ' + btn.textContent.trim(); }
+                                const btns = Array.from(document.querySelectorAll('button'))
+                                    .filter(b => b.offsetParent !== null && !b.disabled);
+                                // Prefer exact "EXPORT" match (the button in this dialog)
+                                const exportBtn = btns.find(
+                                    b => b.textContent.trim().toUpperCase() === 'EXPORT'
+                                );
+                                if (exportBtn) {
+                                    exportBtn.scrollIntoView({block:'center'});
+                                    exportBtn.click();
+                                    return 'export-btn: ' + exportBtn.textContent.trim();
                                 }
-                                const ok = Array.from(document.querySelectorAll('button'))
-                                    .find(b => b.textContent.trim().toUpperCase() === 'OK'
-                                               && b.offsetParent !== null && !b.disabled);
-                                if (ok) { ok.click(); return 'fallback-ok'; }
+                                // Fallback: OK button
+                                const ok = btns.find(b => b.textContent.trim().toUpperCase() === 'OK');
+                                if (ok) { ok.click(); return 'ok-fallback'; }
                                 return 'not-found';
                             }
                         """)
