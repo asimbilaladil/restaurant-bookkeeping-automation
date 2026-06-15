@@ -715,104 +715,115 @@ def open_report_viewer(
                 filters_shot,
             )
 
-            # ── Step 20: Click the dropdown arrow next to Run ────────────────
-            log.info("Opening Export dropdown")
-            _eval_all = [ctx, page] if ctx != page else [ctx]
-            dropdown = ctx.evaluate("""
-                () => {
-                    const btn = document.querySelector('button.quickRunBTN');
-                    if (btn) { btn.scrollIntoView({block:'center'}); btn.click(); return 'dropdown-clicked'; }
-                    return 'not-found';
-                }
-            """)
-            log.info("Dropdown: %s", dropdown)
-            page.wait_for_timeout(1_500)
+            # ── Steps 20-23: Navigate to export URL, find dialog page, export ──
+            EXPORT_URL = (
+                "https://ayg.restaurant365.com/react/print-ssrs-report/export"
+                "/GL%20Account%20Detail%20Export"
+                "/%2FNA03%2FGL%20Account%20Detail%20Export"
+                "/System%20View/quick"
+            )
 
-            # ── Step 21: Click Export from the menu ──────────────────────────
-            # AngularJS Material menus may portal to body — try both ctx and page
-            export_click = "not-found"
-            for ec in _eval_all:
-                export_click = ec.evaluate(r"""
-                    () => {
-                        const btns = Array.from(document.querySelectorAll('button'));
-                        const exp = btns.find(b => b.textContent.trim() === 'Export'
-                                                   && b.offsetParent !== null);
-                        if (exp) { exp.click(); return 'export-clicked'; }
-                        const spans = Array.from(document.querySelectorAll('span[md-menu-align-target]'));
-                        const s = spans.find(x => x.textContent.trim() === 'Export' && x.offsetParent !== null);
-                        if (s) { const p = s.closest('button'); if (p) { p.click(); return 'export-via-span'; } }
-                        return 'not-found';
-                    }
-                """)
-                if export_click != "not-found":
-                    break
-            log.info("Export click: %s", export_click)
-            page.wait_for_timeout(2_500)
+            # R365 may open this route in a NEW tab via window.open().
+            # Capture any new page that opens during/after the navigation.
+            new_tabs: list = []
+            _on_page = lambda p: new_tabs.append(p)   # keep ref so we can remove it
+            browser.on("page", _on_page)
 
-            # Wait for the MUI export dialog to fully render
-            # (dialog is React/MUI, lives in main page DOM — not the AngularJS frame ctx)
+            log.info("Navigating to export URL")
+            page.goto(EXPORT_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(3_000)          # let any popup settle
             try:
-                page.wait_for_selector(
-                    'button[data-testid="customExportButton"]', timeout=10_000
+                browser.remove_listener("page", _on_page)
+            except Exception as e:
+                log.warning("remove_listener failed (non-fatal): %s", e)
+
+            # Decide which page has the printReportDialog.
+            # Check new tabs first, then the original page.
+            export_page = page
+            candidates = new_tabs + [p for p in browser.pages if p is not page] + [page]
+            seen = set()
+            for candidate in candidates:
+                if id(candidate) in seen:
+                    continue
+                seen.add(id(candidate))
+                try:
+                    candidate.wait_for_load_state("domcontentloaded", timeout=5_000)
+                    has_dlg = candidate.evaluate(
+                        "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
+                    )
+                    log.info("Candidate %s hasDialog=%s", candidate.url[:60], has_dlg)
+                    if has_dlg:
+                        export_page = candidate
+                        break
+                except Exception as ce:
+                    log.info("Candidate check error: %s", ce)
+
+            log.info("Export page: %s (url=%s)", "same" if export_page is page else "new-tab",
+                     export_page.url)
+            _emit("Opened export page — waiting for dialog…", _snap(export_page, "export_nav"))
+
+            # Wait for the dialog — data-testid="printReportDialog"
+            try:
+                export_page.wait_for_selector(
+                    '[data-testid="printReportDialog"]', timeout=15_000
                 )
+                log.info("printReportDialog ready")
             except Exception:
-                page.wait_for_timeout(4_000)
-            export_dialog_shot = _snap(page, "export_dialog")
-            _emit("Export dialog loaded — selecting Excel format…", export_dialog_shot)
+                log.warning("printReportDialog not seen in 15s — continuing")
+            export_dialog_shot = _snap(export_page, "export_dialog")
+            _emit("Export dialog loaded — selecting Excel…", export_dialog_shot)
 
-            # ── Step 22: Click the Excel radio (MUI: input[name="exportFileOptions"][value="Excel"]) ──
-            fmt = page.evaluate("""
-                () => {
-                    // Exact selector from the MUI dialog DOM
-                    const radio = document.querySelector(
-                        'input[name="exportFileOptions"][value="Excel"]'
-                    );
-                    if (radio) {
-                        // Click the parent label so React's onChange fires
-                        const label = radio.closest('label');
-                        if (label) { label.click(); return 'excel-label-clicked'; }
-                        radio.click();
-                        return 'excel-radio-clicked';
-                    }
-                    return 'excel-not-found';
-                }
-            """)
-            log.info("Excel radio: %s", fmt)
+            # ── Select Excel radio ────────────────────────────────────────────
+            # MUI renders a hidden <input> inside span.MuiButtonBase-root.
+            # check(force=True) sets the radio and dispatches change/click events
+            # that React's controlled-input system responds to.
+            excel_checked = False
+            excel_input = export_page.locator(
+                'input[name="exportFileOptions"][value="Excel"]'
+            )
+            try:
+                excel_input.wait_for(state="attached", timeout=5_000)
+                excel_input.check(force=True)
+                log.info("Excel checked via check(force=True)")
+                excel_checked = True
+            except Exception as e:
+                log.warning("check(force) failed (%s) — trying span click", e)
+                try:
+                    # Fallback: click the MuiButtonBase-root span (React's onClick target)
+                    export_page.locator(
+                        'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
+                    ).click()
+                    log.info("Excel MuiButtonBase span clicked")
+                    excel_checked = True
+                except Exception as e2:
+                    log.warning("Span click also failed: %s", e2)
+
+            if not excel_checked:
+                log.warning("Could not select Excel — will export with default (PDF)")
             page.wait_for_timeout(600)
-            _emit("Excel selected — clicking Export…", _snap(page, "excel_selected"))
+            _emit("Excel selected — clicking Export…", _snap(export_page, "excel_selected"))
 
-            # ── Step 23: Click button[data-testid="customExportButton"] + capture download ──
+            # ── Click Export and capture download ─────────────────────────────
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             download_filename = None
             try:
-                with page.expect_download(timeout=45_000) as dl_info:
-                    ok_r = page.evaluate("""
-                        () => {
-                            // Exact test-id from MUI dialog
-                            const btn = document.querySelector(
-                                'button[data-testid="customExportButton"]'
-                            );
-                            if (btn) { btn.click(); return 'customExportButton-clicked'; }
-                            // Fallback: first visible "Export" button
-                            const fallback = Array.from(document.querySelectorAll('button'))
-                                .find(b => b.textContent.trim() === 'Export'
-                                        && b.offsetParent !== null && !b.disabled);
-                            if (fallback) { fallback.click(); return 'export-text-fallback'; }
-                            return 'not-found';
-                        }
-                    """)
-                    log.info("Export confirm: %s", ok_r)
+                with export_page.expect_download(timeout=45_000) as dl_info:
+                    export_btn = export_page.locator('button[data-testid="customExportButton"]')
+                    export_btn.wait_for(state="visible", timeout=5_000)
+                    export_btn.click()
+                    log.info("Export button clicked")
 
                 dl = dl_info.value
                 download_filename = dl.suggested_filename or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
                 save_path = DOWNLOADS_DIR / download_filename
                 dl.save_as(str(save_path))
                 log.info("Saved download: %s", save_path)
-                _emit(f"Export saved: {download_filename}", _snap(page, "after_download"))
+                _emit(f"Export saved: {download_filename}", _snap(export_page, "after_download"))
 
             except Exception as dl_err:
                 log.warning("Download capture failed: %s", dl_err)
-                _emit("Export triggered — download not captured", _snap(page, "after_export"))
+                _emit("Export triggered — download not captured",
+                      _snap(export_page, "after_export"))
 
             screenshot_name = _snap(page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
