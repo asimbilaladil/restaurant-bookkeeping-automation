@@ -567,6 +567,7 @@
 
   <!-- R365 Report Viewer launcher -->
   <div class="card controls-card" style="flex-direction:column;align-items:stretch;gap:14px;margin-bottom:20px;">
+    <!-- Row 1: date + filter controls -->
     <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;">
       <div class="field">
         <label>Start Date</label>
@@ -590,6 +591,9 @@
           <button class="toggle-btn active" id="btnCalFiscal" onclick="setFilterToggle('calendar','Fiscal')">Fiscal</button>
         </div>
       </div>
+    </div>
+    <!-- Row 2: location selector + action button -->
+    <div style="display:flex;align-items:center;gap:10px;">
       <button class="btn btn-outline" id="btnLocation" onclick="openEntityPanel()">
         <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
           <path stroke-linecap="round" stroke-linejoin="round" d="M10 18s6-5.4 6-11a6 6 0 10-12 0c0 5.6 6 11 6 11z"/>
@@ -598,7 +602,7 @@
         Location
         <span class="count-badge" id="cfgEntity">LCF Airtex LLC</span>
       </button>
-      <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()">
+      <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()" style="margin-left:auto;">
         <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
         </svg>
