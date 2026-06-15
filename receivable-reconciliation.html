@@ -42,7 +42,7 @@
 
     /* ─── Top banner ─── */
     .top-bar {
-      background: linear-gradient(135deg, #0891b2 0%, #0e7490 55%, #155e75 100%);
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 55%, #2563eb 100%);
       padding: 36px 32px 32px;
       position: relative;
       overflow: hidden;
@@ -156,8 +156,8 @@
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     input[type="date"]:focus {
-      border-color: var(--cyan);
-      box-shadow: 0 0 0 3px rgba(8,145,178,0.12);
+      border-color: var(--indigo);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.12);
     }
 
     .btn {
@@ -179,13 +179,13 @@
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     .btn-primary {
-      background: var(--cyan);
+      background: var(--indigo);
       color: #fff;
-      box-shadow: 0 1px 2px rgba(8,145,178,0.25), 0 4px 12px rgba(8,145,178,0.2);
+      box-shadow: 0 1px 2px rgba(79,70,229,0.25), 0 4px 12px rgba(79,70,229,0.2);
     }
     .btn-primary:hover:not(:disabled) {
-      background: #0e7490;
-      box-shadow: 0 2px 4px rgba(8,145,178,0.3), 0 8px 20px rgba(8,145,178,0.25);
+      background: #4338ca;
+      box-shadow: 0 2px 4px rgba(79,70,229,0.3), 0 8px 20px rgba(79,70,229,0.25);
       transform: translateY(-1px);
     }
     .btn-outline {
@@ -193,7 +193,7 @@
       color: var(--sub);
       border: 1.5px solid var(--border2);
     }
-    .btn-outline:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-lt); }
+    .btn-outline:hover:not(:disabled) { border-color: var(--indigo); color: var(--indigo); background: var(--indigo-lt); }
 
     /* ─── Stats row ─── */
     .stats-row {
@@ -232,10 +232,10 @@
       color: var(--text);
     }
     .stat-val span { font-size: 1rem; font-weight: 500; color: var(--muted); }
-    .stat-fetched .stat-icon { background: var(--cyan-lt); color: var(--cyan); }
+    .stat-fetched .stat-icon { background: var(--indigo-lt); color: var(--indigo); }
     .stat-ok      .stat-icon { background: var(--green-lt); color: var(--green); }
     .stat-issues  .stat-icon { background: var(--red-lt);   color: var(--red); }
-    .stat-fetched .stat-val  { color: var(--cyan); }
+    .stat-fetched .stat-val  { color: var(--indigo); }
     .stat-ok      .stat-val  { color: var(--green); }
     .stat-issues  .stat-val  { color: var(--red); }
 
@@ -275,7 +275,7 @@
       transition: border-color 0.2s, box-shadow 0.2s;
     }
     .est-card.pending  { border-top-color: var(--border2); }
-    .est-card.running  { border-top-color: var(--cyan);   box-shadow: 0 0 0 2px rgba(8,145,178,0.1), var(--shadow-sm); }
+    .est-card.running  { border-top-color: var(--indigo);   box-shadow: 0 0 0 2px rgba(79,70,229,0.1), var(--shadow-sm); }
     .est-card.success  { border-top-color: var(--green);  background: #f9fffe; }
     .est-card.error    { border-top-color: var(--red);    background: #fffafa; }
 
@@ -290,7 +290,7 @@
       font-size: 0.67rem; font-weight: 700; white-space: nowrap; flex-shrink: 0;
     }
     .status-pill.pending  { background: var(--bg);       color: var(--muted); }
-    .status-pill.running  { background: var(--cyan-lt);  color: var(--cyan); }
+    .status-pill.running  { background: var(--indigo-lt);  color: var(--indigo); }
     .status-pill.success  { background: var(--green-lt); color: var(--green); }
     .status-pill.error    { background: var(--red-lt);   color: var(--red); }
 
@@ -302,7 +302,7 @@
     .row-label { font-size: 0.69rem; color: var(--muted); font-weight: 600; }
     .row-state { font-size: 0.69rem; font-weight: 700; }
     .row-state.pending { color: var(--muted); }
-    .row-state.running { color: var(--cyan); }
+    .row-state.running { color: var(--indigo); }
     .row-state.success { color: var(--green); }
     .row-state.error   { color: var(--red); }
     .row-state.skip    { color: var(--amber); }
@@ -310,11 +310,11 @@
     .prog-track { height: 3px; border-radius: 99px; background: var(--border); overflow: hidden; }
     .prog-fill  { height: 100%; border-radius: 99px; transition: width 0.4s ease; width: 0%; }
     .prog-fill.pending { background: var(--muted); width: 0%; }
-    .prog-fill.running { background: var(--cyan);  width: 55%; }
+    .prog-fill.running { background: var(--indigo);  width: 55%; }
     .prog-fill.success { background: var(--green); width: 100%; }
     .prog-fill.error   { background: var(--red);   width: 100%; }
 
-    .card-link { font-size: 0.69rem; color: var(--cyan); text-decoration: none; font-weight: 600; }
+    .card-link { font-size: 0.69rem; color: var(--indigo); text-decoration: none; font-weight: 600; }
     .card-link:hover { text-decoration: underline; }
 
     /* ─── Results table ─── */
@@ -366,16 +366,18 @@
     .badge.pending { background: var(--bg);        color: var(--muted); }
 
     /* ─── Activity log ─── */
-    .log-card { padding: 16px 20px; }
-    .log-hdr { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
-    .log-body { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
-    .log-line { display: flex; gap: 10px; font-size: 0.78rem; line-height: 1.5; }
-    .log-ts   { color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-    .log-msg  { color: var(--sub); }
-    .log-msg.info    { color: var(--sub); }
-    .log-msg.success { color: var(--green); font-weight: 600; }
-    .log-msg.error   { color: var(--red);   font-weight: 600; }
-    .log-msg.warn    { color: var(--amber); font-weight: 600; }
+    .card-section { padding: 20px 22px; margin-bottom: 16px; }
+    #log { background:#f8fafc; border:1px solid var(--border); border-radius:8px; max-height:220px; overflow-y:auto; font-family:"SF Mono","Fira Code",monospace; font-size:0.76rem; }
+    .log-entry { display:flex; align-items:baseline; gap:10px; padding:6px 14px; border-bottom:1px solid #f1f4f9; line-height:1.5; }
+    .log-entry:last-child { border-bottom:none; }
+    .log-entry:hover { background:#f1f5fb; }
+    .log-ts { font-size:0.7rem; color:var(--muted); white-space:nowrap; flex-shrink:0; padding-top:1px; }
+    .log-icon { flex-shrink:0; font-size:0.75rem; }
+    .log-msg { color:var(--sub); flex:1; word-break:break-word; }
+    .log-entry.log-success .log-msg { color:var(--green); }
+    .log-entry.log-error .log-msg { color:var(--red); }
+    .log-entry.log-warn .log-msg { color:var(--amber); }
+    .log-entry.log-start .log-msg { color:var(--text); font-weight:600; }
 
     /* ─── Empty state ─── */
     .empty-state {
@@ -406,8 +408,8 @@
     }
     .toggle-btn:first-child { border-radius: 6px 0 0 6px; border-right-width: 0.75px; }
     .toggle-btn:last-child  { border-radius: 0 6px 6px 0; border-left-width: 0.75px; }
-    .toggle-btn.active { background: var(--cyan); color: #fff; border-color: var(--cyan); }
-    .toggle-btn:hover:not(.active) { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-lt); }
+    .toggle-btn.active { background: var(--indigo); color: #fff; border-color: var(--indigo); }
+    .toggle-btn:hover:not(.active) { border-color: var(--indigo); color: var(--indigo); background: var(--indigo-lt); }
 
     /* ─── Location pill on the launcher button row ─── */
     .count-badge {
@@ -420,7 +422,7 @@
       border-radius: 99px;
       font-size: 0.69rem;
       font-weight: 700;
-      background: var(--cyan);
+      background: var(--indigo);
       color: #fff;
       max-width: 180px;
       overflow: hidden;
@@ -490,7 +492,7 @@
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .panel-search:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(8,145,178,0.12); }
+    .panel-search:focus { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
     .panel-list { flex: 1; overflow-y: auto; }
     .panel-item {
       display: flex;
@@ -502,16 +504,16 @@
       border-bottom: 1px solid #f7f8fc;
       user-select: none;
     }
-    .panel-item:hover { background: #f0fbfd; }
-    .panel-item.selected { background: var(--cyan-lt); }
+    .panel-item:hover { background: #f0f1ff; }
+    .panel-item.selected { background: var(--indigo-lt); }
     .panel-item input[type="radio"] {
       width: 15px; height: 15px;
-      accent-color: var(--cyan);
+      accent-color: var(--indigo);
       cursor: pointer;
       flex-shrink: 0;
     }
     .panel-item-name { font-size: 0.82rem; font-weight: 600; color: var(--text); flex: 1; }
-    .panel-item.selected .panel-item-name { color: var(--cyan); }
+    .panel-item.selected .panel-item-name { color: var(--indigo); }
   </style>
 </head>
 <body>
@@ -602,7 +604,7 @@
           Location
           <span class="count-badge" id="cfgEntity">LCF Airtex LLC</span>
         </button>
-        <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()" style="background:#7c3aed;box-shadow:0 1px 2px rgba(124,58,237,0.25),0 4px 12px rgba(124,58,237,0.2);">
+        <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()">
           <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
           </svg>
@@ -707,14 +709,9 @@
   </div>
 
   <!-- Activity log -->
-  <div class="card log-card">
-    <div class="log-hdr">Activity Log</div>
-    <div class="log-body" id="logBody">
-      <div class="log-line">
-        <span class="log-ts">--:--:--</span>
-        <span class="log-msg info">Waiting to start…</span>
-      </div>
-    </div>
+  <div class="card card-section">
+    <div class="section-hdr"><h2>Activity Log</h2></div>
+    <div id="log"></div>
   </div>
 
 </div>
@@ -908,6 +905,7 @@
     document.getElementById("r365EndDate").value   = today.toISOString().slice(0, 10);
 
     await loadEstablishments();
+    addLog("Waiting to start…", "info");
   });
 
   async function loadEstablishments() {
@@ -922,13 +920,17 @@
 
   // ─── UI helpers ──────────────────────────────────────────────────────────────
   function addLog(msg, type = "info") {
-    const body = document.getElementById("logBody");
-    const now = new Date().toTimeString().slice(0, 8);
-    const line = document.createElement("div");
-    line.className = "log-line";
-    line.innerHTML = `<span class="log-ts">${now}</span><span class="log-msg ${type}">${msg}</span>`;
-    body.appendChild(line);
-    body.scrollTop = body.scrollHeight;
+    const el = document.getElementById("log");
+    const now = new Date().toLocaleTimeString("en-US", { hour12: false });
+    const row = document.createElement("div");
+    const typeMap = { info: "", success: "log-success", error: "log-error", warn: "log-warn" };
+    const iconMap = { info: "○", success: "✓", error: "✕", warn: "!" };
+    const cls = typeMap[type] || "";
+    const icon = iconMap[type] || "○";
+    row.className = "log-entry" + (cls ? " " + cls : "");
+    row.innerHTML = `<span class="log-ts">${now}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span>`;
+    el.appendChild(row);
+    el.scrollTop = el.scrollHeight;
   }
 
   function setStats(fetched, total, ok, issues) {
@@ -1006,10 +1008,11 @@
     document.getElementById("estGrid").innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:32px 0;"><p>Select a date and click Run Reconciliation to begin.</p></div>`;
     document.getElementById("resultsSection").style.display = "none";
     document.getElementById("resultsBody").innerHTML = "";
-    document.getElementById("logBody").innerHTML = `<div class="log-line"><span class="log-ts">--:--:--</span><span class="log-msg info">Waiting to start…</span></div>`;
+    document.getElementById("log").innerHTML = "";
     document.getElementById("btnReset").style.display = "none";
     document.getElementById("btnRun").disabled = false;
     setStats(0, 0, 0, 0);
+    addLog("Waiting to start…", "info");
   }
 
   // ─── SSE reader ──────────────────────────────────────────────────────────────
