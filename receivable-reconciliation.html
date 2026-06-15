@@ -611,8 +611,10 @@
       </div>
     </div>
     <div id="navStatus" style="display:none;width:100%;">
-      <div style="background:#0d1526;border-radius:8px;padding:12px 16px;font-family:'SF Mono','Fira Mono',monospace;font-size:0.76rem;color:#8594ae;" id="navLog">Launching…</div>
-      <img id="navScreenshot" src="" alt="R365 screenshot" style="display:none;margin-top:12px;border-radius:8px;border:1px solid var(--border);width:100%;" />
+      <div style="background:#0d1526;border-radius:8px;overflow:hidden;">
+        <div id="navLog" style="padding:10px 16px;font-family:'SF Mono','Fira Mono',monospace;font-size:0.76rem;color:#8594ae;max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
+      </div>
+      <img id="navScreenshot" src="" alt="R365 screenshot" style="display:none;margin-top:12px;border-radius:8px;border:1px solid var(--border);width:100%;cursor:pointer;" onclick="window.open(this.src,'_blank')" title="Click to open full size" />
     </div>
   </div>
 
@@ -811,8 +813,17 @@
     btn.textContent = 'Launching…';
     statusDiv.style.display = 'block';
     imgEl.style.display = 'none';
-    logEl.style.color = '#93c5fd';
-    logEl.textContent = `Logging into R365 and navigating to Report Viewer for ${selectedEntity}…`;
+    logEl.innerHTML = '';
+
+    function _navLog(msg, color = '#8594ae') {
+      const line = document.createElement('span');
+      line.style.color = color;
+      line.textContent = msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    _navLog(`Launching browser for ${selectedEntity}…`, '#93c5fd');
 
     try {
       const resp = await fetch('/api/r365/report-viewer', {
@@ -826,27 +837,37 @@
           calendar:        r365Calendar,
         }),
       });
-      const raw = await resp.text();
-      let data;
-      try { data = JSON.parse(raw); } catch (_) {
-        logEl.style.color = '#f87171';
-        logEl.textContent = `Server error (${resp.status}): ${raw.slice(0, 300)}`;
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        _navLog(`Server error (${resp.status}): ${txt.slice(0, 300)}`, '#f87171');
         return;
       }
-      if (!resp.ok || data.error) {
-        logEl.style.color = '#f87171';
-        logEl.textContent = 'Error: ' + (data.error || 'Unknown error');
-      } else {
-        logEl.style.color = '#34d399';
-        logEl.textContent = 'Navigated to: ' + data.url;
-        if (data.screenshot_filename) {
-          imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
-          imgEl.style.display = 'block';
+
+      await readSSE(resp, (evType, data) => {
+        if (evType !== 'rv') return;
+        if (data.type === 'step') {
+          _navLog(data.message, '#93c5fd');
+          if (data.screenshot) {
+            imgEl.src = '/screenshots/' + data.screenshot + '?t=' + Date.now();
+            imgEl.style.display = 'block';
+          }
+        } else if (data.type === 'done') {
+          _navLog('Done — report loaded', '#34d399');
+          if (data.screenshot_filename) {
+            imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
+            imgEl.style.display = 'block';
+          }
+        } else if (data.type === 'error') {
+          _navLog('Error: ' + data.message, '#f87171');
+          if (data.screenshot_filename) {
+            imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
+            imgEl.style.display = 'block';
+          }
         }
-      }
+      });
     } catch (e) {
-      logEl.style.color = '#f87171';
-      logEl.textContent = 'Request failed: ' + e.message;
+      _navLog('Request failed: ' + e.message, '#f87171');
     } finally {
       btn.disabled = false;
       btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Open Report Viewer in R365`;

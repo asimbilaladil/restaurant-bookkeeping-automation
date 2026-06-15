@@ -294,14 +294,40 @@ def r365_report_viewer():
         legal_entity, start_date, end_date, show_unapproved, calendar,
     )
 
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(open_report_viewer, legal_entity, start_date, end_date, show_unapproved, calendar)
-        result = future.result(timeout=300)
+    ev_queue: queue.Queue = queue.Queue()
 
-    if "error" in result:
-        return jsonify(result), 500
-    return jsonify(result)
+    def _progress(message: str, screenshot=None):
+        ev_queue.put({"type": "step", "message": message, "screenshot": screenshot})
+
+    def _run():
+        try:
+            result = open_report_viewer(
+                legal_entity, start_date, end_date, show_unapproved, calendar,
+                progress_cb=_progress,
+            )
+            ev_queue.put({"type": "done", **result})
+        except Exception as exc:
+            log.error("report-viewer error: %s", exc)
+            ev_queue.put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _stream():
+        while True:
+            try:
+                ev = ev_queue.get(timeout=300)
+            except queue.Empty:
+                yield 'event: rv\ndata: {"type":"error","message":"timeout"}\n\n'
+                break
+            yield f"event: rv\ndata: {json.dumps(ev, default=str)}\n\n"
+            if ev.get("type") in ("done", "error"):
+                break
+
+    return Response(
+        _stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/api/r365/reconcile-all", methods=["POST"])
