@@ -717,32 +717,29 @@ def open_report_viewer(
                 filters_shot,
             )
 
-            # ── Steps 20-23: Open the Run-button dropdown → Export, then
-            # navigate to the print-ssrs-report URL in a new tab. The dropdown
-            # click primes R365's in-memory filter context; the URL nav opens
-            # the export dialog.
+            # ── Steps 20-23: Click RUN directly to open the SSRS ReportViewer
+            # in a new tab. That viewer carries the customize-dialog's filter
+            # state via its URL hash, and its built-in toolbar has a Save /
+            # Export dropdown that triggers a real file download (no NRE).
             new_tabs: list = []
             _on_page = lambda p: new_tabs.append(p)
             browser.on("page", _on_page)
 
-            log.info("Opening Run-button dropdown (split-button chevron)")
+            log.info("Clicking RUN button (customize dialog) to open ReportViewer")
             # Click chevron in both contexts (ctx = AngularJS iframe, where
             # the customize dialog lives; page = outer React doc, where some
             # popups may render via portals). We scope to the customize
             # dialog by walking up from the visible "GL Account Detail Export"
             # title text until we find a runBTN within.
-            FIND_AND_CLICK_CHEVRON_JS = """
+            # Click the customize-dialog's RUN button (rightmost runBTN that
+            # sits next to the visible report-title text).
+            FIND_AND_CLICK_RUN_JS = """
                 (reportTitle) => {
                     function visible(el) {
                         if (!el || !el.offsetParent) return false;
                         const r = el.getBoundingClientRect();
                         return r.width > 0 && r.height > 0;
                     }
-                    // "GL Account Detail Export" appears twice: once in the
-                    // reports-list row AND once as the customize-dialog
-                    // header. Collect runBTNs reachable from each title node,
-                    // then pick the right-most one — the customize dialog
-                    // panel sits on the right side of the viewport.
                     const titleNodes = Array.from(document.querySelectorAll('*'))
                         .filter(el => visible(el)
                             && el.children.length === 0
@@ -762,330 +759,36 @@ def open_report_viewer(
                     );
                     const runBtn = runs[0];
                     if (!runBtn) return JSON.stringify({
-                        result: 'run-not-found-in-dialog',
+                        result: 'run-not-found',
                         titleCount: titleNodes.length,
-                        runCount: found.size,
                     });
-
-                    const runRect = runBtn.getBoundingClientRect();
-                    const allBtns = Array.from(document.querySelectorAll('button'))
-                        .filter(visible);
-                    let chevron = null, bestDist = 80;
-                    for (const b of allBtns) {
-                        if (b === runBtn) continue;
-                        const r = b.getBoundingClientRect();
-                        const sameY = Math.abs(
-                            (r.y + r.height/2) - (runRect.y + runRect.height/2)
-                        ) < 25;
-                        const dist = r.x - (runRect.x + runRect.width);
-                        if (sameY && dist >= -5 && dist < bestDist) {
-                            bestDist = dist;
-                            chevron = b;
-                        }
-                    }
-                    if (!chevron) return JSON.stringify({
-                        result: 'chevron-not-found',
-                        runRect: {x: runRect.x, y: runRect.y, w: runRect.width, h: runRect.height},
-                    });
-                    chevron.scrollIntoView({block:'center'});
-                    chevron.click();
+                    runBtn.scrollIntoView({block:'center'});
+                    runBtn.click();
                     return JSON.stringify({
-                        result: 'chevron-clicked',
-                        gap: bestDist,
-                        runY: runRect.y,
-                        chevronText: chevron.textContent.trim().slice(0,20),
-                        chevronAria: chevron.getAttribute('aria-label') || '',
+                        result: 'run-clicked',
+                        ngClick: runBtn.getAttribute('ng-click') || '',
                     });
                 }
             """
-            dropdown_result = ctx.evaluate(FIND_AND_CLICK_CHEVRON_JS, TARGET_REPORT)
-            log.info("Run dropdown (ctx): %s", dropdown_result)
-            if "run-not-found-in-dialog" in (dropdown_result or ""):
-                # Fall back to outer page
-                dropdown_result = page.evaluate(FIND_AND_CLICK_CHEVRON_JS, TARGET_REPORT)
-                log.info("Run dropdown (page fallback): %s", dropdown_result)
+            run_result = ctx.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+            log.info("Run button (ctx): %s", run_result)
+            if "run-not-found" in (run_result or ""):
+                run_result = page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+                log.info("Run button (page fallback): %s", run_result)
 
-            page.wait_for_timeout(1_200)
-            _emit("Opened Run dropdown — selecting Export…",
-                  _snap(page, "run_dropdown"))
+            _emit("Clicked RUN — waiting for ReportViewer tab…",
+                  _snap(page, "run_clicked"))
 
-            # Search for Export menu item with: shadow-DOM piercing, all
-            # frames, polling, and Playwright's native text locator as a
-            # parallel attempt (most reliable user-trusted click).
-            FIND_AND_CLICK_EXPORT_JS = """
-                () => {
-                    function visible(el) {
-                        if (!el || !(el instanceof Element)) return false;
-                        const r = el.getBoundingClientRect();
-                        if (r.width <= 0 || r.height <= 0) return false;
-                        const cs = getComputedStyle(el);
-                        if (cs.visibility === 'hidden' || cs.display === 'none'
-                            || parseFloat(cs.opacity) === 0) return false;
-                        return true;
-                    }
-                    // Walk DOM including shadow roots.
-                    function* walk(root) {
-                        const stack = [root];
-                        while (stack.length) {
-                            const node = stack.pop();
-                            if (node.nodeType === 1) yield node;
-                            const sr = node.shadowRoot;
-                            if (sr) for (const c of sr.children) stack.push(c);
-                            const children = node.children || [];
-                            for (let i = children.length - 1; i >= 0; i--) {
-                                stack.push(children[i]);
-                            }
-                        }
-                    }
-                    function ancestorHasPrintEmail(el) {
-                        let cur = el;
-                        for (let i = 0; i < 12 && cur; i++) {
-                            const t = cur.textContent || '';
-                            if (t.length < 500
-                                && /\\bPrint\\b/.test(t)
-                                && /\\bEmail\\b/.test(t)) return true;
-                            cur = cur.parentElement || (cur.getRootNode
-                                && cur.getRootNode().host);
-                        }
-                        return false;
-                    }
-                    const all = [...walk(document.documentElement)].filter(visible);
-                    const exportCands = all.filter(el => {
-                        const t = (el.textContent || '').trim();
-                        return t.toLowerCase() === 'export'
-                            && el.children.length <= 1;
-                    }).filter(ancestorHasPrintEmail);
-                    if (exportCands.length === 0) return JSON.stringify({
-                        result: 'export-item-not-found',
-                        scanned: all.length,
-                    });
-                    const tagRank = (t) => ({
-                        'BUTTON': 0, 'MD-BUTTON': 1, 'A': 2,
-                    }[t] ?? 9);
-                    exportCands.sort((a,b) => tagRank(a.tagName) - tagRank(b.tagName));
-                    let chosen = exportCands[0];
-                    if (tagRank(chosen.tagName) === 9) {
-                        const inner = chosen.querySelector(
-                            'button, md-button, a, [ng-click]'
-                        );
-                        if (inner && visible(inner)) chosen = inner;
-                    }
-                    chosen.scrollIntoView({block:'center'});
-                    chosen.click();
-                    return JSON.stringify({
-                        result: 'export-item-clicked',
-                        tag: chosen.tagName,
-                        ngClick: chosen.getAttribute('ng-click') || '',
-                    });
-                }
-            """
-            log.info("Clicking Export menu item — polling all frames")
-            export_menu_result = None
-            for attempt in range(20):  # ~10s of polling
-                page.wait_for_timeout(500)
-                all_frames = list(page.frames)
-                for fi, frame in enumerate(all_frames):
-                    try:
-                        result = frame.evaluate(FIND_AND_CLICK_EXPORT_JS)
-                        if result and "export-item-clicked" in result:
-                            export_menu_result = result
-                            log.info("Export found on attempt %d frame %d (%s): %s",
-                                     attempt, fi, (frame.url or "")[:60], result)
-                            break
-                    except Exception as fe:
-                        log.debug("Frame %d evaluate error: %s", fi, fe)
-                if export_menu_result:
-                    break
-            # Parallel attempt: Playwright's text locator (handles many cases)
-            if not export_menu_result:
-                log.info("JS search exhausted — trying Playwright text locator")
-                for fi, frame in enumerate(list(page.frames)):
-                    try:
-                        loc = frame.get_by_text("Export", exact=True).first
-                        if loc.count() > 0 and loc.is_visible(timeout=1_000):
-                            loc.click(timeout=2_000)
-                            export_menu_result = f"playwright-clicked-frame-{fi}"
-                            log.info("Playwright clicked Export in frame %d (%s)",
-                                     fi, (frame.url or "")[:60])
-                            break
-                    except Exception as pe:
-                        log.debug("Playwright click frame %d failed: %s", fi, pe)
-            if not export_menu_result:
-                log.warning("Export menu item not found anywhere")
-                _emit("Could not find Export menu item",
-                      _snap(page, "export_item_missing"))
-                export_menu_result = "export-item-not-found-anywhere"
-
-            try:
-                browser.remove_listener("page", _on_page)
-            except Exception as e:
-                log.warning("remove_listener failed (non-fatal): %s", e)
-
-            # The Export menu's ngClick is `handlers.openPrintSSRSReportDialog('export')`.
-            # That opens the print-ssrs-report dialog IN-PLACE (overlaying the
-            # report grid), preserving the customize-dialog's filter context.
-            # The dialog can mount either:
-            #   - in the outer React page (page.main_frame's document)
-            #   - inside one of the AngularJS iframes
-            #   - in a popup tab spawned by R365 (rare)
-            # Opening the print-ssrs-report URL in a new tab loses the filter
-            # context and triggers a NullReferenceException, so we ONLY use
-            # that as a last-resort fallback.
-
-            export_target = None   # Page or Frame that has the dialog
-            export_page = page     # Page object owning export_target (for screenshots/downloads)
-
-            def _find_dialog_target():
-                for p in [page] + [pp for pp in browser.pages if pp is not page]:
-                    try:
-                        if p.evaluate(
-                            "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
-                        ):
-                            return p, p
-                    except Exception:
-                        pass
-                    for fr in p.frames:
-                        try:
-                            if fr.evaluate(
-                                "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
-                            ):
-                                return fr, p
-                        except Exception:
-                            pass
-                return None, None
-
-            # Poll up to 20s for the dialog from the in-place menu click
-            deadline = time.time() + 20
-            while time.time() < deadline:
-                target, owner = _find_dialog_target()
-                if target is not None:
-                    export_target = target
-                    export_page = owner
-                    log.info("Dialog found in %s (kind=%s, url=%s)",
-                             "page" if target is owner else "frame",
-                             type(target).__name__,
-                             (getattr(target, "url", "") or "")[:80])
-                    break
-                page.wait_for_timeout(500)
-
-            # Last resort: URL fallback (loses filter context, may NRE)
-            if export_target is None:
-                EXPORT_URL = (
-                    "https://ayg.restaurant365.com/react/print-ssrs-report/export"
-                    "/GL%20Account%20Detail%20Export"
-                    "/%2FNA03%2FGL%20Account%20Detail%20Export"
-                    "/System%20View/quick"
-                )
-                log.warning("Dialog never appeared in-place — opening URL in new tab "
-                            "(filter context may be lost, expect possible NRE)")
-                new_tab = browser.new_page()
-                new_tab.goto(EXPORT_URL, wait_until="domcontentloaded")
-                new_tab.wait_for_timeout(2_000)
-                export_target = new_tab
-                export_page = new_tab
-
-            _emit("Export dialog ready — selecting Excel…", _snap(export_page, "export_nav"))
-
-            # Wait for the dialog — data-testid="printReportDialog"
-            try:
-                export_target.wait_for_selector(
-                    '[data-testid="printReportDialog"]', timeout=15_000
-                )
-                log.info("printReportDialog ready")
-            except Exception:
-                log.warning("printReportDialog not seen in 15s — continuing")
-            export_dialog_shot = _snap(export_page, "export_dialog")
-            _emit("Export dialog loaded — selecting Excel…", export_dialog_shot)
-
-            # ── Select Excel radio ────────────────────────────────────────────
-            # MUI Radio renders a hidden <input> inside a wrapping label/span.
-            # React only responds when the click reaches its onChange handler,
-            # so we try several strategies and verify isChecked() after each.
-            excel_input = export_target.locator(
-                'input[name="exportFileOptions"][value="Excel"]'
-            )
-            try:
-                excel_input.wait_for(state="attached", timeout=10_000)
-            except Exception as e:
-                log.warning("Excel radio not attached: %s", e)
-
-            def _excel_is_checked() -> bool:
-                try:
-                    return excel_input.is_checked()
-                except Exception:
-                    return False
-
-            excel_checked = _excel_is_checked()
-            log.info("Excel initial state: checked=%s", excel_checked)
-
-            strategies = [
-                ("role radio check",
-                 lambda: export_target.get_by_role("radio", name="Excel").check(force=True)),
-                ("FormControlLabel click",
-                 lambda: export_target.locator(
-                     'label.MuiFormControlLabel-root:has(input[value="Excel"])'
-                 ).first.click()),
-                ("label-by-text click",
-                 lambda: export_target.locator(
-                     'label:has(input[name="exportFileOptions"][value="Excel"])'
-                 ).first.click()),
-                ("MuiButtonBase span click",
-                 lambda: export_target.locator(
-                     'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
-                 ).first.click()),
-                ("React setter + change event",
-                 lambda: export_target.evaluate("""
-                    () => {
-                      const el = document.querySelector(
-                        'input[name="exportFileOptions"][value="Excel"]'
-                      );
-                      if (!el) return false;
-                      const setter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'checked'
-                      ).set;
-                      setter.call(el, true);
-                      el.dispatchEvent(new Event('click', { bubbles: true }));
-                      el.dispatchEvent(new Event('change', { bubbles: true }));
-                      return true;
-                    }
-                 """)),
-            ]
-
-            for name, action in strategies:
-                if excel_checked:
-                    break
-                try:
-                    action()
-                    export_page.wait_for_timeout(400)
-                    excel_checked = _excel_is_checked()
-                    log.info("Strategy %r → checked=%s", name, excel_checked)
-                except Exception as e:
-                    log.warning("Strategy %r failed: %s", name, e)
-
-            if not excel_checked:
-                log.warning("Could not select Excel — will export with default (PDF)")
-                _emit("Excel NOT selected — exporting with default format",
-                      _snap(export_page, "excel_unchecked"))
-            else:
-                _emit("Excel selected — clicking Export…",
-                      _snap(export_page, "excel_selected"))
-            export_page.wait_for_timeout(400)
-
-            # ── Click Export and capture download ─────────────────────────────
-            # The SSRS export may stream the file from a different page (a
-            # transient popup that immediately closes), so we listen at the
-            # browser-context level and also catch any popups opened by the
-            # Export click for retry attempts.
+            # ── Wait for the ReportViewer tab the RUN button spawns ─────────
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             download_filename = None
-
             captured_download = {"dl": None}
 
             def _on_download(dl):
                 if captured_download["dl"] is None:
                     captured_download["dl"] = dl
-                    log.info("Download event captured: %s (page=%s)",
-                             dl.suggested_filename, getattr(dl, "page", None))
+                    log.info("Download event captured: %s",
+                             dl.suggested_filename)
 
             popup_pages: list = []
 
@@ -1100,42 +803,207 @@ def open_report_viewer(
             browser.on("page", _on_popup)
             browser.on("download", _on_download)
             try:
-                export_page.on("download", _on_download)
+                page.on("download", _on_download)
+            except Exception:
+                pass
+
+            # Wait up to 30s for a ReportViewer tab to appear (new tabs list
+            # was populated by the _on_page listener registered earlier).
+            viewer_page = None
+            deadline = time.time() + 30
+            while time.time() < deadline and viewer_page is None:
+                for p in list(browser.pages):
+                    try:
+                        if "ReportViewer" in (p.url or ""):
+                            viewer_page = p
+                            break
+                    except Exception:
+                        continue
+                if viewer_page is None:
+                    page.wait_for_timeout(500)
+
+            if viewer_page is None:
+                # Fallback: navigate the original page to /#/ReportViewer
+                log.warning("No ReportViewer tab appeared — navigating in place")
+                page.evaluate(
+                    "() => window.location.hash = '#/ReportViewer'"
+                )
+                page.wait_for_timeout(3_000)
+                viewer_page = page
+
+            log.info("ReportViewer: %s", viewer_page.url[:120])
+            try:
+                viewer_page.bring_to_front()
+                viewer_page.on("download", _on_download)
+            except Exception:
+                pass
+            try:
+                viewer_page.wait_for_load_state("networkidle", timeout=20_000)
             except Exception:
                 pass
 
             try:
-                export_btn = export_target.locator('button[data-testid="customExportButton"]')
-                export_btn.wait_for(state="visible", timeout=5_000)
-                export_btn.click()
-                log.info("Export button clicked")
+                browser.remove_listener("page", _on_page)
+            except Exception as e:
+                log.warning("remove_listener failed (non-fatal): %s", e)
 
-                # Poll the context-level capture for up to 60s
-                deadline = time.time() + 60
-                while time.time() < deadline and captured_download["dl"] is None:
-                    export_page.wait_for_timeout(500)
+            _emit("Opened ReportViewer — locating Save/Export…",
+                  _snap(viewer_page, "report_viewer_loaded"))
 
-                dl = captured_download["dl"]
-                if dl is None:
-                    raise TimeoutError("No download event in 60s "
-                                       f"(popups seen: {len(popup_pages)})")
+            # ── Click the SSRS Save/Export dropdown, then choose Excel ──────
+            # R365's ReportViewer renders an SSRS toolbar (often inside an
+            # iframe). The export trigger is typically an <input type=image>
+            # with title="Export drop down menu" or a button with title/
+            # aria-label of "Save" or "Export". After clicking, a dropdown
+            # appears containing <a>Excel</a>.
+            FIND_AND_CLICK_SAVE_JS = """
+                () => {
+                    function visible(el) {
+                        if (!el || !(el instanceof Element)) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return false;
+                        const cs = getComputedStyle(el);
+                        if (cs.visibility === 'hidden' || cs.display === 'none')
+                            return false;
+                        return true;
+                    }
+                    const sels = [
+                        'input[type="image"][title*="Export" i]',
+                        'input[type="image"][title*="Save" i]',
+                        'a[title*="Export" i]',
+                        'button[title*="Export" i]',
+                        'button[aria-label*="Export" i]',
+                        '[aria-label="Save"]',
+                        '[title="Save"]',
+                    ];
+                    for (const sel of sels) {
+                        const el = document.querySelector(sel);
+                        if (el && visible(el)) {
+                            el.scrollIntoView({block:'center'});
+                            el.click();
+                            return JSON.stringify({
+                                clicked: true, sel,
+                                title: el.getAttribute('title') || '',
+                                aria: el.getAttribute('aria-label') || '',
+                            });
+                        }
+                    }
+                    return JSON.stringify({clicked: false});
+                }
+            """
+            FIND_AND_CLICK_EXCEL_OPTION_JS = """
+                () => {
+                    function visible(el) {
+                        if (!el || !(el instanceof Element)) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return false;
+                        const cs = getComputedStyle(el);
+                        if (cs.visibility === 'hidden' || cs.display === 'none')
+                            return false;
+                        return true;
+                    }
+                    const cands = Array.from(document.querySelectorAll(
+                        'a, button, [role="menuitem"], div'
+                    )).filter(el => {
+                        if (!visible(el)) return false;
+                        const t = (el.textContent || '').trim();
+                        return /^excel( workbook)?$/i.test(t)
+                            || /excel/i.test(el.getAttribute('title') || '');
+                    });
+                    if (cands.length === 0) return JSON.stringify({clicked: false});
+                    const el = cands[0];
+                    el.scrollIntoView({block:'center'});
+                    el.click();
+                    return JSON.stringify({
+                        clicked: true,
+                        tag: el.tagName,
+                        text: (el.textContent || '').trim().slice(0, 30),
+                    });
+                }
+            """
 
-                download_filename = dl.suggested_filename or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
-                save_path = DOWNLOADS_DIR / download_filename
-                dl.save_as(str(save_path))
-                log.info("Saved download: %s", save_path)
-                _emit(f"Export saved: {download_filename}", _snap(export_page, "after_download"))
+            def _all_contexts(p):
+                """Yield (label, page-or-frame) for every queryable context."""
+                yield "page", p
+                for fr in p.frames:
+                    if fr is not p.main_frame:
+                        yield f"frame[{(fr.url or '')[:60]}]", fr
 
-            except Exception as dl_err:
-                log.warning("Download capture failed: %s", dl_err)
-                _emit("Export triggered — download not captured",
-                      _snap(export_page, "after_export"))
-            finally:
-                try:
-                    browser.remove_listener("download", _on_download)
-                    browser.remove_listener("page", _on_popup)
-                except Exception:
-                    pass
+            def _click_in_any(p, js, label):
+                for ctx_label, c in _all_contexts(p):
+                    try:
+                        r = c.evaluate(js)
+                        if r and '"clicked":true' in r:
+                            log.info("%s clicked in %s: %s", label, ctx_label, r)
+                            return r
+                    except Exception:
+                        continue
+                return None
+
+            # Poll up to 20s for Save / Export toolbar trigger.
+            save_clicked = None
+            deadline = time.time() + 20
+            while time.time() < deadline and save_clicked is None:
+                save_clicked = _click_in_any(
+                    viewer_page, FIND_AND_CLICK_SAVE_JS, "Save/Export"
+                )
+                if save_clicked is None:
+                    viewer_page.wait_for_timeout(500)
+
+            if save_clicked is None:
+                log.warning("Save/Export trigger not found in ReportViewer")
+                _emit("Save/Export trigger not found",
+                      _snap(viewer_page, "save_missing"))
+            else:
+                viewer_page.wait_for_timeout(700)
+                _emit("Save/Export menu opened — selecting Excel…",
+                      _snap(viewer_page, "save_opened"))
+
+                # Wrap the Excel-option click in expect_download as a primary
+                # path (the click directly triggers the download in SSRS).
+                excel_clicked = None
+                deadline = time.time() + 10
+                while time.time() < deadline and excel_clicked is None:
+                    excel_clicked = _click_in_any(
+                        viewer_page, FIND_AND_CLICK_EXCEL_OPTION_JS, "Excel"
+                    )
+                    if excel_clicked is None:
+                        viewer_page.wait_for_timeout(500)
+
+                if excel_clicked is None:
+                    log.warning("Excel option not found in dropdown")
+                    _emit("Excel option not found", _snap(viewer_page, "excel_missing"))
+                else:
+                    # Wait for context-level download event for up to 90s.
+                    deadline = time.time() + 90
+                    while time.time() < deadline and captured_download["dl"] is None:
+                        viewer_page.wait_for_timeout(500)
+
+                    dl = captured_download["dl"]
+                    if dl is not None:
+                        download_filename = (
+                            dl.suggested_filename
+                            or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
+                        )
+                        save_path = DOWNLOADS_DIR / download_filename
+                        try:
+                            dl.save_as(str(save_path))
+                            log.info("Saved download: %s", save_path)
+                            _emit(f"Export saved: {download_filename}",
+                                  _snap(viewer_page, "after_download"))
+                        except Exception as se:
+                            log.warning("save_as failed: %s", se)
+                    else:
+                        log.warning("Excel clicked but no download in 90s "
+                                    "(popups seen: %d)", len(popup_pages))
+                        _emit("Excel clicked — download not captured",
+                              _snap(viewer_page, "after_excel"))
+
+            try:
+                browser.remove_listener("download", _on_download)
+                browser.remove_listener("page", _on_popup)
+            except Exception:
+                pass
 
             screenshot_name = _snap(page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
