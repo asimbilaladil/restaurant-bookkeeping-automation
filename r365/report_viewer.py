@@ -726,13 +726,6 @@ def open_report_viewer(
             browser.on("page", _on_page)
 
             log.info("Clicking RUN button (customize dialog) to open ReportViewer")
-            # Click chevron in both contexts (ctx = AngularJS iframe, where
-            # the customize dialog lives; page = outer React doc, where some
-            # popups may render via portals). We scope to the customize
-            # dialog by walking up from the visible "GL Account Detail Export"
-            # title text until we find a runBTN within.
-            # Click the customize-dialog's RUN button (rightmost runBTN that
-            # sits next to the visible report-title text).
             FIND_AND_CLICK_RUN_JS = """
                 (reportTitle) => {
                     function visible(el) {
