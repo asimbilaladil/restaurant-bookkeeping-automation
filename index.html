@@ -920,7 +920,7 @@
     const dateVal = document.getElementById("startDate").value;
     const ests = results
       .filter(r => enabledEsts.has(r.establishment_id) && EST_NAMES[r.establishment_id])
-      .map(r => ({ id: r.establishment_id, name: EST_NAMES[r.establishment_id], data: r.data || {}, xlsx_path: r.xlsx_path || null }));
+      .map(r => ({ id: r.establishment_id, name: EST_NAMES[r.establishment_id], data: r.data || {}, pdf_path: r.pdf_path || null }));
 
     for (const e of ests) setR365Row(e.id, "pending");
 

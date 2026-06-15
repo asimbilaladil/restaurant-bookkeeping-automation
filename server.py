@@ -243,7 +243,7 @@ def r365_navigate():
 
     location_name = body.get("location_name")
     revel_data = body.get("revel_data") or {}
-    xlsx_path = body.get("xlsx_path")
+    pdf_path = body.get("pdf_path")
     revel_values = _extract_revel_values(revel_data)
 
     # Resolve establishment ID from name for R365 override lookup
@@ -255,7 +255,7 @@ def r365_navigate():
     import concurrent.futures
     with _entity_log(location_name, target_date) as log_path:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(open_r365_journal_entry, target_date, r365_name, revel_values, xlsx_path)
+            future = ex.submit(open_r365_journal_entry, target_date, r365_name, revel_values, pdf_path)
             result = future.result(timeout=300)
 
     result["log_filename"] = log_path.name
@@ -332,7 +332,7 @@ def r365_reconcile_all():
             est_id = est.get("id")
             name = est.get("name")
             data = est.get("data") or {}
-            xlsx_path = est.get("xlsx_path")
+            pdf_path = est.get("pdf_path")
             revel_values = _extract_revel_values(data)
             r365_name = R365_NAME_OVERRIDES.get(est_id, name)
             if r365_name != name:
@@ -341,7 +341,7 @@ def r365_reconcile_all():
             event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "running"})
             try:
                 with _entity_log(name, target_date) as log_path:
-                    result = open_r365_journal_entry(target_date, r365_name, revel_values, xlsx_path)
+                    result = open_r365_journal_entry(target_date, r365_name, revel_values, pdf_path)
                 if "error" in result:
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                      "status": "error", "error": result["error"],
