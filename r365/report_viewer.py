@@ -916,57 +916,79 @@ def open_report_viewer(
                       _snap(page, "export_item_missing"))
                 export_menu_result = "export-item-not-found-anywhere"
 
-            page.wait_for_timeout(3_000)  # let popup tab settle
+            try:
+                browser.remove_listener("page", _on_page)
+            except Exception as e:
+                log.warning("remove_listener failed (non-fatal): %s", e)
 
-            # If no new tab opened from the menu click, open the print-ssrs-
-            # report URL in a new tab directly — same iframe-style URL as the
-            # working approach used previously.
-            if not new_tabs:
+            # The Export menu's ngClick is `handlers.openPrintSSRSReportDialog('export')`.
+            # That opens the print-ssrs-report dialog IN-PLACE (overlaying the
+            # report grid), preserving the customize-dialog's filter context.
+            # The dialog can mount either:
+            #   - in the outer React page (page.main_frame's document)
+            #   - inside one of the AngularJS iframes
+            #   - in a popup tab spawned by R365 (rare)
+            # Opening the print-ssrs-report URL in a new tab loses the filter
+            # context and triggers a NullReferenceException, so we ONLY use
+            # that as a last-resort fallback.
+
+            export_target = None   # Page or Frame that has the dialog
+            export_page = page     # Page object owning export_target (for screenshots/downloads)
+
+            def _find_dialog_target():
+                for p in [page] + [pp for pp in browser.pages if pp is not page]:
+                    try:
+                        if p.evaluate(
+                            "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
+                        ):
+                            return p, p
+                    except Exception:
+                        pass
+                    for fr in p.frames:
+                        try:
+                            if fr.evaluate(
+                                "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
+                            ):
+                                return fr, p
+                        except Exception:
+                            pass
+                return None, None
+
+            # Poll up to 20s for the dialog from the in-place menu click
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                target, owner = _find_dialog_target()
+                if target is not None:
+                    export_target = target
+                    export_page = owner
+                    log.info("Dialog found in %s (kind=%s, url=%s)",
+                             "page" if target is owner else "frame",
+                             type(target).__name__,
+                             (getattr(target, "url", "") or "")[:80])
+                    break
+                page.wait_for_timeout(500)
+
+            # Last resort: URL fallback (loses filter context, may NRE)
+            if export_target is None:
                 EXPORT_URL = (
                     "https://ayg.restaurant365.com/react/print-ssrs-report/export"
                     "/GL%20Account%20Detail%20Export"
                     "/%2FNA03%2FGL%20Account%20Detail%20Export"
                     "/System%20View/quick"
                 )
-                log.info("No popup tab from menu — opening export URL in new tab")
+                log.warning("Dialog never appeared in-place — opening URL in new tab "
+                            "(filter context may be lost, expect possible NRE)")
                 new_tab = browser.new_page()
                 new_tab.goto(EXPORT_URL, wait_until="domcontentloaded")
-                new_tabs.append(new_tab)
-                page.wait_for_timeout(2_000)
+                new_tab.wait_for_timeout(2_000)
+                export_target = new_tab
+                export_page = new_tab
 
-            try:
-                browser.remove_listener("page", _on_page)
-            except Exception as e:
-                log.warning("remove_listener failed (non-fatal): %s", e)
-
-            # Decide which page has the printReportDialog.
-            # Check new tabs first, then the original page.
-            export_page = page
-            candidates = new_tabs + [p for p in browser.pages if p is not page] + [page]
-            seen = set()
-            for candidate in candidates:
-                if id(candidate) in seen:
-                    continue
-                seen.add(id(candidate))
-                try:
-                    candidate.wait_for_load_state("domcontentloaded", timeout=5_000)
-                    has_dlg = candidate.evaluate(
-                        "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
-                    )
-                    log.info("Candidate %s hasDialog=%s", candidate.url[:60], has_dlg)
-                    if has_dlg:
-                        export_page = candidate
-                        break
-                except Exception as ce:
-                    log.info("Candidate check error: %s", ce)
-
-            log.info("Export page: %s (url=%s)", "same" if export_page is page else "new-tab",
-                     export_page.url)
-            _emit("Opened export page — waiting for dialog…", _snap(export_page, "export_nav"))
+            _emit("Export dialog ready — selecting Excel…", _snap(export_page, "export_nav"))
 
             # Wait for the dialog — data-testid="printReportDialog"
             try:
-                export_page.wait_for_selector(
+                export_target.wait_for_selector(
                     '[data-testid="printReportDialog"]', timeout=15_000
                 )
                 log.info("printReportDialog ready")
@@ -979,7 +1001,7 @@ def open_report_viewer(
             # MUI Radio renders a hidden <input> inside a wrapping label/span.
             # React only responds when the click reaches its onChange handler,
             # so we try several strategies and verify isChecked() after each.
-            excel_input = export_page.locator(
+            excel_input = export_target.locator(
                 'input[name="exportFileOptions"][value="Excel"]'
             )
             try:
@@ -998,21 +1020,21 @@ def open_report_viewer(
 
             strategies = [
                 ("role radio check",
-                 lambda: export_page.get_by_role("radio", name="Excel").check(force=True)),
+                 lambda: export_target.get_by_role("radio", name="Excel").check(force=True)),
                 ("FormControlLabel click",
-                 lambda: export_page.locator(
+                 lambda: export_target.locator(
                      'label.MuiFormControlLabel-root:has(input[value="Excel"])'
                  ).first.click()),
                 ("label-by-text click",
-                 lambda: export_page.locator(
+                 lambda: export_target.locator(
                      'label:has(input[name="exportFileOptions"][value="Excel"])'
                  ).first.click()),
                 ("MuiButtonBase span click",
-                 lambda: export_page.locator(
+                 lambda: export_target.locator(
                      'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
                  ).first.click()),
                 ("React setter + change event",
-                 lambda: export_page.evaluate("""
+                 lambda: export_target.evaluate("""
                     () => {
                       const el = document.querySelector(
                         'input[name="exportFileOptions"][value="Excel"]'
@@ -1083,7 +1105,7 @@ def open_report_viewer(
                 pass
 
             try:
-                export_btn = export_page.locator('button[data-testid="customExportButton"]')
+                export_btn = export_target.locator('button[data-testid="customExportButton"]')
                 export_btn.wait_for(state="visible", timeout=5_000)
                 export_btn.click()
                 log.info("Export button clicked")
