@@ -4,6 +4,7 @@ Navigate R365: My Reports → Accounting tab → GL Account Detail Export Custom
 """
 
 import logging
+import time
 import uuid
 from datetime import date as date_type
 from pathlib import Path
@@ -133,6 +134,7 @@ def open_report_viewer(
             headless=False,
             args=["--start-maximized"],
             no_viewport=True,
+            accept_downloads=True,
         )
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
@@ -1048,16 +1050,54 @@ def open_report_viewer(
             export_page.wait_for_timeout(400)
 
             # ── Click Export and capture download ─────────────────────────────
+            # The SSRS export may stream the file from a different page (a
+            # transient popup that immediately closes), so we listen at the
+            # browser-context level and also catch any popups opened by the
+            # Export click for retry attempts.
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             download_filename = None
-            try:
-                with export_page.expect_download(timeout=45_000) as dl_info:
-                    export_btn = export_page.locator('button[data-testid="customExportButton"]')
-                    export_btn.wait_for(state="visible", timeout=5_000)
-                    export_btn.click()
-                    log.info("Export button clicked")
 
-                dl = dl_info.value
+            captured_download = {"dl": None}
+
+            def _on_download(dl):
+                if captured_download["dl"] is None:
+                    captured_download["dl"] = dl
+                    log.info("Download event captured: %s (page=%s)",
+                             dl.suggested_filename, getattr(dl, "page", None))
+
+            popup_pages: list = []
+
+            def _on_popup(p):
+                popup_pages.append(p)
+                log.info("Popup page opened: %s", p.url[:120])
+                try:
+                    p.on("download", _on_download)
+                except Exception:
+                    pass
+
+            browser.on("page", _on_popup)
+            browser.on("download", _on_download)
+            try:
+                export_page.on("download", _on_download)
+            except Exception:
+                pass
+
+            try:
+                export_btn = export_page.locator('button[data-testid="customExportButton"]')
+                export_btn.wait_for(state="visible", timeout=5_000)
+                export_btn.click()
+                log.info("Export button clicked")
+
+                # Poll the context-level capture for up to 60s
+                deadline = time.time() + 60
+                while time.time() < deadline and captured_download["dl"] is None:
+                    export_page.wait_for_timeout(500)
+
+                dl = captured_download["dl"]
+                if dl is None:
+                    raise TimeoutError("No download event in 60s "
+                                       f"(popups seen: {len(popup_pages)})")
+
                 download_filename = dl.suggested_filename or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
                 save_path = DOWNLOADS_DIR / download_filename
                 dl.save_as(str(save_path))
@@ -1068,6 +1108,12 @@ def open_report_viewer(
                 log.warning("Download capture failed: %s", dl_err)
                 _emit("Export triggered — download not captured",
                       _snap(export_page, "after_export"))
+            finally:
+                try:
+                    browser.remove_listener("download", _on_download)
+                    browser.remove_listener("page", _on_popup)
+                except Exception:
+                    pass
 
             screenshot_name = _snap(page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
