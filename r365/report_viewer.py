@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright, Frame
 
 from .session import PROFILE_DIR, ensure_logged_in_r365
 
-DOWNLOADS_DIR = Path("/opt/accounts/app/downloads")
+DOWNLOADS_DIR = Path(__file__).resolve().parent.parent / "downloads"
 
 log = logging.getLogger(__name__)
 
@@ -715,23 +715,223 @@ def open_report_viewer(
                 filters_shot,
             )
 
-            # ── Steps 20-23: Navigate to export URL, find dialog page, export ──
-            EXPORT_URL = (
-                "https://ayg.restaurant365.com/react/print-ssrs-report/export"
-                "/GL%20Account%20Detail%20Export"
-                "/%2FNA03%2FGL%20Account%20Detail%20Export"
-                "/System%20View/quick"
-            )
-
-            # R365 may open this route in a NEW tab via window.open().
-            # Capture any new page that opens during/after the navigation.
+            # ── Steps 20-23: Open the Run-button dropdown → Export, then
+            # navigate to the print-ssrs-report URL in a new tab. The dropdown
+            # click primes R365's in-memory filter context; the URL nav opens
+            # the export dialog.
             new_tabs: list = []
-            _on_page = lambda p: new_tabs.append(p)   # keep ref so we can remove it
+            _on_page = lambda p: new_tabs.append(p)
             browser.on("page", _on_page)
 
-            log.info("Navigating to export URL")
-            page.goto(EXPORT_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(3_000)          # let any popup settle
+            log.info("Opening Run-button dropdown (split-button chevron)")
+            # Click chevron in both contexts (ctx = AngularJS iframe, where
+            # the customize dialog lives; page = outer React doc, where some
+            # popups may render via portals). We scope to the customize
+            # dialog by walking up from the visible "GL Account Detail Export"
+            # title text until we find a runBTN within.
+            FIND_AND_CLICK_CHEVRON_JS = """
+                (reportTitle) => {
+                    function visible(el) {
+                        if (!el || !el.offsetParent) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    }
+                    // "GL Account Detail Export" appears twice: once in the
+                    // reports-list row AND once as the customize-dialog
+                    // header. Collect runBTNs reachable from each title node,
+                    // then pick the right-most one — the customize dialog
+                    // panel sits on the right side of the viewport.
+                    const titleNodes = Array.from(document.querySelectorAll('*'))
+                        .filter(el => visible(el)
+                            && el.children.length === 0
+                            && el.textContent.trim() === reportTitle);
+                    const found = new Set();
+                    for (const t of titleNodes) {
+                        let cur = t;
+                        for (let i = 0; i < 15 && cur; i++) {
+                            const rb = cur.querySelector
+                                && cur.querySelector('button.runBTN');
+                            if (rb && visible(rb)) { found.add(rb); break; }
+                            cur = cur.parentElement;
+                        }
+                    }
+                    const runs = [...found].sort((a,b) =>
+                        b.getBoundingClientRect().x - a.getBoundingClientRect().x
+                    );
+                    const runBtn = runs[0];
+                    if (!runBtn) return JSON.stringify({
+                        result: 'run-not-found-in-dialog',
+                        titleCount: titleNodes.length,
+                        runCount: found.size,
+                    });
+
+                    const runRect = runBtn.getBoundingClientRect();
+                    const allBtns = Array.from(document.querySelectorAll('button'))
+                        .filter(visible);
+                    let chevron = null, bestDist = 80;
+                    for (const b of allBtns) {
+                        if (b === runBtn) continue;
+                        const r = b.getBoundingClientRect();
+                        const sameY = Math.abs(
+                            (r.y + r.height/2) - (runRect.y + runRect.height/2)
+                        ) < 25;
+                        const dist = r.x - (runRect.x + runRect.width);
+                        if (sameY && dist >= -5 && dist < bestDist) {
+                            bestDist = dist;
+                            chevron = b;
+                        }
+                    }
+                    if (!chevron) return JSON.stringify({
+                        result: 'chevron-not-found',
+                        runRect: {x: runRect.x, y: runRect.y, w: runRect.width, h: runRect.height},
+                    });
+                    chevron.scrollIntoView({block:'center'});
+                    chevron.click();
+                    return JSON.stringify({
+                        result: 'chevron-clicked',
+                        gap: bestDist,
+                        runY: runRect.y,
+                        chevronText: chevron.textContent.trim().slice(0,20),
+                        chevronAria: chevron.getAttribute('aria-label') || '',
+                    });
+                }
+            """
+            dropdown_result = ctx.evaluate(FIND_AND_CLICK_CHEVRON_JS, TARGET_REPORT)
+            log.info("Run dropdown (ctx): %s", dropdown_result)
+            if "run-not-found-in-dialog" in (dropdown_result or ""):
+                # Fall back to outer page
+                dropdown_result = page.evaluate(FIND_AND_CLICK_CHEVRON_JS, TARGET_REPORT)
+                log.info("Run dropdown (page fallback): %s", dropdown_result)
+
+            page.wait_for_timeout(1_200)
+            _emit("Opened Run dropdown — selecting Export…",
+                  _snap(page, "run_dropdown"))
+
+            # Search for Export menu item with: shadow-DOM piercing, all
+            # frames, polling, and Playwright's native text locator as a
+            # parallel attempt (most reliable user-trusted click).
+            FIND_AND_CLICK_EXPORT_JS = """
+                () => {
+                    function visible(el) {
+                        if (!el || !(el instanceof Element)) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return false;
+                        const cs = getComputedStyle(el);
+                        if (cs.visibility === 'hidden' || cs.display === 'none'
+                            || parseFloat(cs.opacity) === 0) return false;
+                        return true;
+                    }
+                    // Walk DOM including shadow roots.
+                    function* walk(root) {
+                        const stack = [root];
+                        while (stack.length) {
+                            const node = stack.pop();
+                            if (node.nodeType === 1) yield node;
+                            const sr = node.shadowRoot;
+                            if (sr) for (const c of sr.children) stack.push(c);
+                            const children = node.children || [];
+                            for (let i = children.length - 1; i >= 0; i--) {
+                                stack.push(children[i]);
+                            }
+                        }
+                    }
+                    function ancestorHasPrintEmail(el) {
+                        let cur = el;
+                        for (let i = 0; i < 12 && cur; i++) {
+                            const t = cur.textContent || '';
+                            if (t.length < 500
+                                && /\\bPrint\\b/.test(t)
+                                && /\\bEmail\\b/.test(t)) return true;
+                            cur = cur.parentElement || (cur.getRootNode
+                                && cur.getRootNode().host);
+                        }
+                        return false;
+                    }
+                    const all = [...walk(document.documentElement)].filter(visible);
+                    const exportCands = all.filter(el => {
+                        const t = (el.textContent || '').trim();
+                        return t.toLowerCase() === 'export'
+                            && el.children.length <= 1;
+                    }).filter(ancestorHasPrintEmail);
+                    if (exportCands.length === 0) return JSON.stringify({
+                        result: 'export-item-not-found',
+                        scanned: all.length,
+                    });
+                    const tagRank = (t) => ({
+                        'BUTTON': 0, 'MD-BUTTON': 1, 'A': 2,
+                    }[t] ?? 9);
+                    exportCands.sort((a,b) => tagRank(a.tagName) - tagRank(b.tagName));
+                    let chosen = exportCands[0];
+                    if (tagRank(chosen.tagName) === 9) {
+                        const inner = chosen.querySelector(
+                            'button, md-button, a, [ng-click]'
+                        );
+                        if (inner && visible(inner)) chosen = inner;
+                    }
+                    chosen.scrollIntoView({block:'center'});
+                    chosen.click();
+                    return JSON.stringify({
+                        result: 'export-item-clicked',
+                        tag: chosen.tagName,
+                        ngClick: chosen.getAttribute('ng-click') || '',
+                    });
+                }
+            """
+            log.info("Clicking Export menu item — polling all frames")
+            export_menu_result = None
+            for attempt in range(20):  # ~10s of polling
+                page.wait_for_timeout(500)
+                all_frames = list(page.frames)
+                for fi, frame in enumerate(all_frames):
+                    try:
+                        result = frame.evaluate(FIND_AND_CLICK_EXPORT_JS)
+                        if result and "export-item-clicked" in result:
+                            export_menu_result = result
+                            log.info("Export found on attempt %d frame %d (%s): %s",
+                                     attempt, fi, (frame.url or "")[:60], result)
+                            break
+                    except Exception as fe:
+                        log.debug("Frame %d evaluate error: %s", fi, fe)
+                if export_menu_result:
+                    break
+            # Parallel attempt: Playwright's text locator (handles many cases)
+            if not export_menu_result:
+                log.info("JS search exhausted — trying Playwright text locator")
+                for fi, frame in enumerate(list(page.frames)):
+                    try:
+                        loc = frame.get_by_text("Export", exact=True).first
+                        if loc.count() > 0 and loc.is_visible(timeout=1_000):
+                            loc.click(timeout=2_000)
+                            export_menu_result = f"playwright-clicked-frame-{fi}"
+                            log.info("Playwright clicked Export in frame %d (%s)",
+                                     fi, (frame.url or "")[:60])
+                            break
+                    except Exception as pe:
+                        log.debug("Playwright click frame %d failed: %s", fi, pe)
+            if not export_menu_result:
+                log.warning("Export menu item not found anywhere")
+                _emit("Could not find Export menu item",
+                      _snap(page, "export_item_missing"))
+                export_menu_result = "export-item-not-found-anywhere"
+
+            page.wait_for_timeout(3_000)  # let popup tab settle
+
+            # If no new tab opened from the menu click, open the print-ssrs-
+            # report URL in a new tab directly — same iframe-style URL as the
+            # working approach used previously.
+            if not new_tabs:
+                EXPORT_URL = (
+                    "https://ayg.restaurant365.com/react/print-ssrs-report/export"
+                    "/GL%20Account%20Detail%20Export"
+                    "/%2FNA03%2FGL%20Account%20Detail%20Export"
+                    "/System%20View/quick"
+                )
+                log.info("No popup tab from menu — opening export URL in new tab")
+                new_tab = browser.new_page()
+                new_tab.goto(EXPORT_URL, wait_until="domcontentloaded")
+                new_tabs.append(new_tab)
+                page.wait_for_timeout(2_000)
+
             try:
                 browser.remove_listener("page", _on_page)
             except Exception as e:
@@ -774,34 +974,78 @@ def open_report_viewer(
             _emit("Export dialog loaded — selecting Excel…", export_dialog_shot)
 
             # ── Select Excel radio ────────────────────────────────────────────
-            # MUI renders a hidden <input> inside span.MuiButtonBase-root.
-            # check(force=True) sets the radio and dispatches change/click events
-            # that React's controlled-input system responds to.
-            excel_checked = False
+            # MUI Radio renders a hidden <input> inside a wrapping label/span.
+            # React only responds when the click reaches its onChange handler,
+            # so we try several strategies and verify isChecked() after each.
             excel_input = export_page.locator(
                 'input[name="exportFileOptions"][value="Excel"]'
             )
             try:
-                excel_input.wait_for(state="attached", timeout=5_000)
-                excel_input.check(force=True)
-                log.info("Excel checked via check(force=True)")
-                excel_checked = True
+                excel_input.wait_for(state="attached", timeout=10_000)
             except Exception as e:
-                log.warning("check(force) failed (%s) — trying span click", e)
+                log.warning("Excel radio not attached: %s", e)
+
+            def _excel_is_checked() -> bool:
                 try:
-                    # Fallback: click the MuiButtonBase-root span (React's onClick target)
-                    export_page.locator(
-                        'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
-                    ).click()
-                    log.info("Excel MuiButtonBase span clicked")
-                    excel_checked = True
-                except Exception as e2:
-                    log.warning("Span click also failed: %s", e2)
+                    return excel_input.is_checked()
+                except Exception:
+                    return False
+
+            excel_checked = _excel_is_checked()
+            log.info("Excel initial state: checked=%s", excel_checked)
+
+            strategies = [
+                ("role radio check",
+                 lambda: export_page.get_by_role("radio", name="Excel").check(force=True)),
+                ("FormControlLabel click",
+                 lambda: export_page.locator(
+                     'label.MuiFormControlLabel-root:has(input[value="Excel"])'
+                 ).first.click()),
+                ("label-by-text click",
+                 lambda: export_page.locator(
+                     'label:has(input[name="exportFileOptions"][value="Excel"])'
+                 ).first.click()),
+                ("MuiButtonBase span click",
+                 lambda: export_page.locator(
+                     'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
+                 ).first.click()),
+                ("React setter + change event",
+                 lambda: export_page.evaluate("""
+                    () => {
+                      const el = document.querySelector(
+                        'input[name="exportFileOptions"][value="Excel"]'
+                      );
+                      if (!el) return false;
+                      const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'checked'
+                      ).set;
+                      setter.call(el, true);
+                      el.dispatchEvent(new Event('click', { bubbles: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true }));
+                      return true;
+                    }
+                 """)),
+            ]
+
+            for name, action in strategies:
+                if excel_checked:
+                    break
+                try:
+                    action()
+                    export_page.wait_for_timeout(400)
+                    excel_checked = _excel_is_checked()
+                    log.info("Strategy %r → checked=%s", name, excel_checked)
+                except Exception as e:
+                    log.warning("Strategy %r failed: %s", name, e)
 
             if not excel_checked:
                 log.warning("Could not select Excel — will export with default (PDF)")
-            page.wait_for_timeout(600)
-            _emit("Excel selected — clicking Export…", _snap(export_page, "excel_selected"))
+                _emit("Excel NOT selected — exporting with default format",
+                      _snap(export_page, "excel_unchecked"))
+            else:
+                _emit("Excel selected — clicking Export…",
+                      _snap(export_page, "excel_selected"))
+            export_page.wait_for_timeout(400)
 
             # ── Click Export and capture download ─────────────────────────────
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
