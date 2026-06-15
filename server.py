@@ -276,11 +276,20 @@ def r365_navigate():
 @login_required
 def r365_report_viewer():
     """
-    Opens R365, logs in, navigates to the Report Viewer page, and returns a screenshot.
-    Body: { "legal_entity": "LCF Airtex LLC" }
+    Opens R365, logs in, navigates to the Report Viewer page, and exports Excel for
+    each requested legal entity in a single browser session.
+    Body: { "legal_entities": [...] }  or  { "legal_entity": "..." }  (back-compat)
     """
     body = request.get_json(silent=True) or {}
-    legal_entity = (body.get("legal_entity") or "").strip() or "LCF Airtex LLC"
+
+    # Accept legal_entities list OR single legal_entity (backward compat)
+    raw = body.get("legal_entities") or []
+    if not raw and body.get("legal_entity"):
+        raw = [body["legal_entity"]]
+    if not raw:
+        raw = ["LCF Airtex LLC"]
+    legal_entities = [str(e).strip() for e in raw if str(e).strip()]
+
     show_unapproved = (body.get("show_unapproved") or "Yes").strip()
     calendar = (body.get("calendar") or "Fiscal").strip()
 
@@ -298,8 +307,8 @@ def r365_report_viewer():
         pass
 
     log.info(
-        "Report Viewer: entity=%r start=%s end=%s unapproved=%r calendar=%r",
-        legal_entity, start_date, end_date, show_unapproved, calendar,
+        "Report Viewer: entities=%r start=%s end=%s unapproved=%r calendar=%r",
+        legal_entities, start_date, end_date, show_unapproved, calendar,
     )
 
     ev_queue: queue.Queue = queue.Queue()
@@ -307,11 +316,15 @@ def r365_report_viewer():
     def _progress(message: str, screenshot=None):
         ev_queue.put({"type": "step", "message": message, "screenshot": screenshot})
 
+    def _entity_done(entity: str, download_filename):
+        ev_queue.put({"type": "entity_done", "entity": entity, "download_filename": download_filename})
+
     def _run():
         try:
             result = open_report_viewer(
-                legal_entity, start_date, end_date, show_unapproved, calendar,
+                legal_entities, start_date, end_date, show_unapproved, calendar,
                 progress_cb=_progress,
+                entity_cb=_entity_done,
             )
             ev_queue.put({"type": "done", **result})
         except Exception as exc:
@@ -331,11 +344,8 @@ def r365_report_viewer():
             if ev.get("type") in ("done", "error"):
                 break
 
-    return Response(
-        _stream(),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return Response(_stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/r365/reconcile-all", methods=["POST"])

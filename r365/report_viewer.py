@@ -115,18 +115,163 @@ def _snap(page, prefix: str) -> str:
     return name
 
 
+def _select_legal_entity(ctx, page, entity: str) -> None:
+    """Open Legal Entity filter dialog, clear existing selections, select entity, confirm OK."""
+
+    # ── Step 12: open Legal Entity filter on Customize panel ─────────
+    # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
+    # → "Legal Entity" option (the option uses ng-click=wantedItem
+    # without the `true` flag, so it's a single-select).
+    log.info("Opening Legal Entity filter")
+    fbtn = ctx.evaluate("""
+        () => {
+            const btns = Array.from(document.querySelectorAll('button'))
+                .filter(b => b.offsetParent !== null);
+            let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
+            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
+            target = btns.find(b => {
+                const t = b.textContent.trim().toUpperCase();
+                return t === 'FILTER BY' || t.startsWith('FILTER BY');
+            });
+            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
+            return 'not-found';
+        }
+    """)
+    log.info("Filter button: %s", fbtn)
+    page.wait_for_timeout(2_000)
+
+    if fbtn == "filter-by-clicked":
+        log.info("Clicking 'Legal Entity' option")
+        le = ctx.evaluate("""
+            () => {
+                const btn = document.querySelector('button[aria-label="Legal Entity"]');
+                if (!btn) return 'not-found';
+                btn.scrollIntoView({block:'center'});
+                btn.click();
+                return 'legal-entity-clicked';
+            }
+        """)
+        log.info("Legal Entity option: %s", le)
+        page.wait_for_timeout(2_500)
+
+    # ── Step 12c: open the FILTER multi-select dialog ─────────────────
+    # Filter By only SETS the filter type; the actual entity selection
+    # lives behind a separate "Filter" dropdown (id="Filter" on the
+    # Customize panel). We must click it to open the entity dialog.
+    log.info("Opening Filter (entity multi-select) dialog")
+    open_filter = ctx.evaluate("""
+        () => {
+            // Click the button inside the Filter parameter row
+            const filterRow = document.getElementById('Filter');
+            if (filterRow) {
+                const btn = filterRow.querySelector('button');
+                if (btn) {
+                    btn.scrollIntoView({block:'center'});
+                    btn.click();
+                    return 'filter-button-clicked';
+                }
+                // Section fallback (parameterMenuClick)
+                const section = filterRow.querySelector('section[role="button"]');
+                if (section) { section.click(); return 'filter-section-clicked'; }
+            }
+            return 'filter-not-found';
+        }
+    """)
+    log.info("Filter open: %s", open_filter)
+    page.wait_for_timeout(2_500)
+
+    # ── Step 13: clear any existing legal entity selections ──────────
+    log.info("Clearing legal entity selections (Select All x2)")
+    for i in (1, 2):
+        res = ctx.evaluate("""
+            () => {
+                const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
+                if (!sa) return 'select-all-not-found';
+                sa.scrollIntoView({block:'center'});
+                sa.click();
+                return 'select-all-clicked aria-checked=' + sa.getAttribute('aria-checked');
+            }
+        """)
+        log.info("Entity Select All click %d: %s", i, res)
+        page.wait_for_timeout(1_000)
+
+    # ── Step 14: type the chosen legal entity in search input ─────────
+    log.info("Typing %r in entity search", entity)
+    try:
+        if ctx != page:
+            inp = ctx.locator('input:not([disabled]):not([type="hidden"])').last
+        else:
+            inp = page.locator('input:not([disabled]):not([type="hidden"])').last
+        inp.click(timeout=5_000)
+        inp.fill("")
+        inp.type(entity, delay=60)
+    except Exception as e:
+        log.warning("Entity search input failed (%s) — keyboard fallback", e)
+        page.keyboard.type(entity, delay=60)
+    page.wait_for_timeout(2_500)
+
+    # ── Step 15: click the entity's wrapper button ───────────────────
+    log.info("Selecting %r", entity)
+    le_click = ctx.evaluate(f"""
+        () => {{
+            const label = {repr(entity)};
+            const btn = document.querySelector(`button[aria-label="${{label}}"]`);
+            if (btn) {{
+                btn.scrollIntoView({{block:'center'}});
+                btn.click();
+                return 'wrapper-button-clicked';
+            }}
+            const cb = document.querySelector(
+                `md-checkbox[aria-label="${{label}} "], ` +
+                `md-checkbox[aria-label="${{label}}"]`
+            );
+            if (cb) {{ cb.scrollIntoView({{block:'center'}}); cb.click(); return 'md-checkbox-clicked'; }}
+            return 'not-found';
+        }}
+    """)
+    log.info("Entity click (%s): %s", entity, le_click)
+    page.wait_for_timeout(1_500)
+
+    # ── Step 16: click OK on entity dialog ───────────────────────────
+    log.info("Clicking OK on entity dialog")
+    le_ok = ctx.evaluate(r"""
+        () => {
+            const ok = document.querySelector("button[ng-click=\"closeDialog('OK')\"]");
+            if (ok) { ok.scrollIntoView({block:'center'}); ok.click(); return 'ok-ng-click'; }
+            const actions = document.querySelector('md-dialog-actions');
+            if (actions) {
+                const btn = Array.from(actions.querySelectorAll('button'))
+                    .find(b => b.textContent.trim().toUpperCase() === 'OK');
+                if (btn) { btn.click(); return 'ok-dialog-actions'; }
+            }
+            return 'ok-not-found';
+        }
+    """)
+    log.info("Entity OK: %s", le_ok)
+    page.wait_for_timeout(2_000)
+
+
 def open_report_viewer(
-    legal_entity: str = "LCF Airtex LLC",
+    legal_entities: list = None,
     start_date: date_type | None = None,
     end_date: date_type | None = None,
     show_unapproved: str = "Yes",
     calendar: str = "Fiscal",
     progress_cb=None,
+    entity_cb=None,
 ) -> dict:
+    # Back-compat: allow single string passed positionally
+    if isinstance(legal_entities, str):
+        legal_entities = [legal_entities]
+    if not legal_entities:
+        legal_entities = ["LCF Airtex LLC"]
+
     def _emit(message: str, screenshot: str = ""):
         log.info("[rv] %s", message)
         if progress_cb:
             progress_cb(message, screenshot or None)
+
+    results = []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch_persistent_context(
@@ -553,141 +698,7 @@ def open_report_viewer(
             log.info("OK: %s", ok_result)
             page.wait_for_timeout(2_500)
 
-            # ── Step 12: open Legal Entity filter on Customize panel ─────────
-            # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
-            # → "Legal Entity" option (the option uses ng-click=wantedItem
-            # without the `true` flag, so it's a single-select).
-            log.info("Opening Legal Entity filter")
-            fbtn = ctx.evaluate("""
-                () => {
-                    const btns = Array.from(document.querySelectorAll('button'))
-                        .filter(b => b.offsetParent !== null);
-                    let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
-                    if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
-                    target = btns.find(b => {
-                        const t = b.textContent.trim().toUpperCase();
-                        return t === 'FILTER BY' || t.startsWith('FILTER BY');
-                    });
-                    if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
-                    return 'not-found';
-                }
-            """)
-            log.info("Filter button: %s", fbtn)
-            page.wait_for_timeout(2_000)
-
-            if fbtn == "filter-by-clicked":
-                log.info("Clicking 'Legal Entity' option")
-                le = ctx.evaluate("""
-                    () => {
-                        const btn = document.querySelector('button[aria-label="Legal Entity"]');
-                        if (!btn) return 'not-found';
-                        btn.scrollIntoView({block:'center'});
-                        btn.click();
-                        return 'legal-entity-clicked';
-                    }
-                """)
-                log.info("Legal Entity option: %s", le)
-                page.wait_for_timeout(2_500)
-
-            # ── Step 12c: open the FILTER multi-select dialog ─────────────────
-            # Filter By only SETS the filter type; the actual entity selection
-            # lives behind a separate "Filter" dropdown (id="Filter" on the
-            # Customize panel). We must click it to open the entity dialog.
-            log.info("Opening Filter (entity multi-select) dialog")
-            open_filter = ctx.evaluate("""
-                () => {
-                    // Click the button inside the Filter parameter row
-                    const filterRow = document.getElementById('Filter');
-                    if (filterRow) {
-                        const btn = filterRow.querySelector('button');
-                        if (btn) {
-                            btn.scrollIntoView({block:'center'});
-                            btn.click();
-                            return 'filter-button-clicked';
-                        }
-                        // Section fallback (parameterMenuClick)
-                        const section = filterRow.querySelector('section[role="button"]');
-                        if (section) { section.click(); return 'filter-section-clicked'; }
-                    }
-                    return 'filter-not-found';
-                }
-            """)
-            log.info("Filter open: %s", open_filter)
-            page.wait_for_timeout(2_500)
-
-            # ── Step 13: clear any existing legal entity selections ──────────
-            log.info("Clearing legal entity selections (Select All x2)")
-            for i in (1, 2):
-                res = ctx.evaluate("""
-                    () => {
-                        const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
-                        if (!sa) return 'select-all-not-found';
-                        sa.scrollIntoView({block:'center'});
-                        sa.click();
-                        return 'select-all-clicked aria-checked=' + sa.getAttribute('aria-checked');
-                    }
-                """)
-                log.info("Entity Select All click %d: %s", i, res)
-                page.wait_for_timeout(1_000)
-
-            # ── Step 14: type the chosen legal entity in search input ─────────
-            LE_SEARCH = legal_entity
-            log.info("Typing %r in entity search", LE_SEARCH)
-            try:
-                if ctx != page:
-                    inp = ctx.locator('input:not([disabled]):not([type="hidden"])').last
-                else:
-                    inp = page.locator('input:not([disabled]):not([type="hidden"])').last
-                inp.click(timeout=5_000)
-                inp.fill("")
-                inp.type(LE_SEARCH, delay=60)
-            except Exception as e:
-                log.warning("Entity search input failed (%s) — keyboard fallback", e)
-                page.keyboard.type(LE_SEARCH, delay=60)
-            page.wait_for_timeout(2_500)
-
-            # ── Step 15: click the entity's wrapper button ───────────────────
-            log.info("Selecting %r", legal_entity)
-            le_click = ctx.evaluate(f"""
-                () => {{
-                    const label = {repr(legal_entity)};
-                    const btn = document.querySelector(`button[aria-label="${{label}}"]`);
-                    if (btn) {{
-                        btn.scrollIntoView({{block:'center'}});
-                        btn.click();
-                        return 'wrapper-button-clicked';
-                    }}
-                    const cb = document.querySelector(
-                        `md-checkbox[aria-label="${{label}} "], ` +
-                        `md-checkbox[aria-label="${{label}}"]`
-                    );
-                    if (cb) {{ cb.scrollIntoView({{block:'center'}}); cb.click(); return 'md-checkbox-clicked'; }}
-                    return 'not-found';
-                }}
-            """)
-            log.info("Entity click (%s): %s", legal_entity, le_click)
-            page.wait_for_timeout(1_500)
-
-            # ── Step 16: click OK on entity dialog ───────────────────────────
-            log.info("Clicking OK on entity dialog")
-            le_ok = ctx.evaluate(r"""
-                () => {
-                    const ok = document.querySelector("button[ng-click=\"closeDialog('OK')\"]");
-                    if (ok) { ok.scrollIntoView({block:'center'}); ok.click(); return 'ok-ng-click'; }
-                    const actions = document.querySelector('md-dialog-actions');
-                    if (actions) {
-                        const btn = Array.from(actions.querySelectorAll('button'))
-                            .find(b => b.textContent.trim().toUpperCase() === 'OK');
-                        if (btn) { btn.click(); return 'ok-dialog-actions'; }
-                    }
-                    return 'ok-not-found';
-                }
-            """)
-            log.info("Entity OK: %s", le_ok)
-            page.wait_for_timeout(2_000)
-            _emit(f"Legal entity '{legal_entity}' selected", _snap(page, "entity_ok"))
-
-            # ── Step 17: Set Start / End date range ──────────────────────────
+            # ── Steps 17-19: Set dates and toggles (runs once) ───────────────
             if start_date:
                 s_str = f"{start_date.month}/{start_date.day}/{start_date.year}"
                 log.info("Setting Start date to %s", s_str)
@@ -700,12 +711,10 @@ def open_report_viewer(
                 r = _set_datepicker(ctx, page, "End", e_str)
                 log.info("End date result: %s", r)
 
-            # ── Step 18: Set Show Unapproved toggle ──────────────────────────
             log.info("Setting Show Unapproved to %r", show_unapproved)
             _click_button_group(ctx, "Show Unapproved", show_unapproved)
             page.wait_for_timeout(400)
 
-            # ── Step 19: Set Calendar toggle ─────────────────────────────────
             log.info("Setting Calendar to %r", calendar)
             _click_button_group(ctx, "Calendar", calendar)
             page.wait_for_timeout(400)
@@ -717,15 +726,7 @@ def open_report_viewer(
                 filters_shot,
             )
 
-            # ── Steps 20-23: Click RUN directly to open the SSRS ReportViewer
-            # in a new tab. That viewer carries the customize-dialog's filter
-            # state via its URL hash, and its built-in toolbar has a Save /
-            # Export dropdown that triggers a real file download (no NRE).
-            new_tabs: list = []
-            _on_page = lambda p: new_tabs.append(p)
-            browser.on("page", _on_page)
-
-            log.info("Clicking RUN button (customize dialog) to open ReportViewer")
+            # ── FIND_AND_CLICK_RUN_JS shared across iterations ───────────────
             FIND_AND_CLICK_RUN_JS = """
                 (reportTitle) => {
                     function visible(el) {
@@ -763,97 +764,6 @@ def open_report_viewer(
                     });
                 }
             """
-            run_result = ctx.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
-            log.info("Run button (ctx): %s", run_result)
-            if "run-not-found" in (run_result or ""):
-                run_result = page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
-                log.info("Run button (page fallback): %s", run_result)
-
-            _emit("Clicked RUN — waiting for ReportViewer tab…",
-                  _snap(page, "run_clicked"))
-
-            # ── Wait for the ReportViewer tab the RUN button spawns ─────────
-            DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-            download_filename = None
-            captured_download = {"dl": None}
-
-            def _on_download(dl):
-                if captured_download["dl"] is None:
-                    captured_download["dl"] = dl
-                    log.info("Download event captured: %s",
-                             dl.suggested_filename)
-
-            popup_pages: list = []
-
-            def _on_popup(p):
-                popup_pages.append(p)
-                log.info("Popup page opened: %s", p.url[:120])
-                try:
-                    p.on("download", _on_download)
-                except Exception:
-                    pass
-
-            browser.on("page", _on_popup)
-            browser.on("download", _on_download)
-            try:
-                page.on("download", _on_download)
-            except Exception:
-                pass
-
-            # Give RUN a moment to prime R365's in-memory report state, then
-            # open the ReportViewer URL in a new tab. Per user observation,
-            # this combination works where the chevron → menu path fails:
-            # RUN primes the server-side state, the direct URL load picks it
-            # up and renders the SSRS report (with its built-in Save/Export
-            # toolbar) without the .NET NullReferenceException.
-            page.wait_for_timeout(3_000)
-            REPORT_VIEWER_URL = "https://ayg.restaurant365.com/#/ReportViewer"
-
-            # Prefer a tab R365 spawned itself; otherwise open one ourselves.
-            viewer_page = None
-            for p in list(browser.pages):
-                try:
-                    if "ReportViewer" in (p.url or ""):
-                        viewer_page = p
-                        break
-                except Exception:
-                    continue
-
-            if viewer_page is None:
-                log.info("Opening ReportViewer in new tab: %s", REPORT_VIEWER_URL)
-                viewer_page = browser.new_page()
-                try:
-                    viewer_page.goto(REPORT_VIEWER_URL, wait_until="domcontentloaded")
-                except Exception as ge:
-                    log.warning("ReportViewer goto warning: %s", ge)
-
-            log.info("ReportViewer: %s", viewer_page.url[:120])
-            try:
-                viewer_page.bring_to_front()
-                viewer_page.on("download", _on_download)
-            except Exception:
-                pass
-            try:
-                viewer_page.wait_for_load_state("networkidle", timeout=20_000)
-            except Exception:
-                pass
-
-            try:
-                browser.remove_listener("page", _on_page)
-            except Exception as e:
-                log.warning("remove_listener failed (non-fatal): %s", e)
-
-            _emit("Opened ReportViewer — locating Export dropdown…",
-                  _snap(viewer_page, "report_viewer_loaded"))
-
-            # ── Open SSRS toolbar's Save (Export) dropdown, then click Excel ─
-            # The native SSRS toolbar trigger is:
-            #   <a id="ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink"
-            #      title="Export drop down menu" ...>
-            # After clicking, a popup menu appears with options including
-            # "Word", "Excel", "PowerPoint", "PDF", etc. as menu items.
-            # The SSRS report can render in the page or in a child iframe,
-            # so we search both contexts.
 
             def _contexts(p):
                 yield "page", p
@@ -861,127 +771,297 @@ def open_report_viewer(
                     if fr is not p.main_frame:
                         yield f"frame[{(fr.url or '')[:60]}]", fr
 
-            # Wait for the SSRS toolbar to appear, then click the dropdown.
-            save_dropdown_clicked = None
-            deadline = time.time() + 30
-            while time.time() < deadline and save_dropdown_clicked is None:
-                for label, c in _contexts(viewer_page):
-                    try:
-                        trigger = c.locator(
-                            'a[title="Export drop down menu"]'
-                        ).first
-                        if trigger.count() > 0 and trigger.is_visible(timeout=500):
-                            trigger.click()
-                            save_dropdown_clicked = label
-                            log.info("Save/Export dropdown clicked in %s", label)
-                            break
-                    except Exception:
-                        continue
-                if save_dropdown_clicked is None:
-                    viewer_page.wait_for_timeout(500)
+            # ── Per-entity loop ───────────────────────────────────────────────
+            viewer_page = None
 
-            if save_dropdown_clicked is None:
-                log.warning("Save/Export dropdown trigger never appeared")
-                _emit("Save/Export dropdown not found",
-                      _snap(viewer_page, "save_missing"))
-            else:
-                viewer_page.wait_for_timeout(1_500)
-                _emit("Save dropdown opened — clicking Excel…",
-                      _snap(viewer_page, "save_opened"))
+            for i, entity in enumerate(legal_entities):
+                _emit(f"Processing entity {i + 1}/{len(legal_entities)}: {entity}…")
 
-                # Click the Excel item. SSRS may render it as "Excel",
-                # "Microsoft Excel", or "Excel 2003-2007". Use JS to find and
-                # click it, and log visible menu items when not found.
-                excel_clicked_in = None
-                deadline = time.time() + 20
-                while time.time() < deadline and excel_clicked_in is None:
-                    for label, c in _contexts(viewer_page):
+                if i == 0:
+                    # First entity: select legal entity then click Run from customize panel
+                    _select_legal_entity(ctx, page, entity)
+                    _emit(f"Legal entity '{entity}' selected", _snap(page, "entity_ok"))
+
+                    # ── Step 20: Click RUN to open ReportViewer ───────────────
+                    new_tabs: list = []
+                    _on_page = lambda p: new_tabs.append(p)
+                    browser.on("page", _on_page)
+
+                    log.info("Clicking RUN button (customize dialog) to open ReportViewer")
+                    run_result = ctx.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+                    log.info("Run button (ctx): %s", run_result)
+                    if "run-not-found" in (run_result or ""):
+                        run_result = page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+                        log.info("Run button (page fallback): %s", run_result)
+
+                    _emit("Clicked RUN — waiting for ReportViewer tab…",
+                          _snap(page, "run_clicked"))
+
+                    # ── Set up download capture ───────────────────────────────
+                    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+                    captured_download = {"dl": None}
+
+                    def _on_download(dl, _cap=captured_download):
+                        if _cap["dl"] is None:
+                            _cap["dl"] = dl
+                            log.info("Download event captured: %s", dl.suggested_filename)
+
+                    popup_pages: list = []
+
+                    def _on_popup(p):
+                        popup_pages.append(p)
+                        log.info("Popup page opened: %s", p.url[:120])
                         try:
-                            result = c.evaluate("""
+                            p.on("download", _on_download)
+                        except Exception:
+                            pass
+
+                    browser.on("page", _on_popup)
+                    browser.on("download", _on_download)
+                    try:
+                        page.on("download", _on_download)
+                    except Exception:
+                        pass
+
+                    page.wait_for_timeout(3_000)
+                    REPORT_VIEWER_URL = "https://ayg.restaurant365.com/#/ReportViewer"
+
+                    # Prefer a tab R365 spawned itself; otherwise open one ourselves.
+                    for p in list(browser.pages):
+                        try:
+                            if "ReportViewer" in (p.url or ""):
+                                viewer_page = p
+                                break
+                        except Exception:
+                            continue
+
+                    if viewer_page is None:
+                        log.info("Opening ReportViewer in new tab: %s", REPORT_VIEWER_URL)
+                        viewer_page = browser.new_page()
+                        try:
+                            viewer_page.goto(REPORT_VIEWER_URL, wait_until="domcontentloaded")
+                        except Exception as ge:
+                            log.warning("ReportViewer goto warning: %s", ge)
+
+                    log.info("ReportViewer: %s", viewer_page.url[:120])
+                    try:
+                        viewer_page.bring_to_front()
+                        viewer_page.on("download", _on_download)
+                    except Exception:
+                        pass
+                    try:
+                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                    except Exception:
+                        pass
+
+                    try:
+                        browser.remove_listener("page", _on_page)
+                    except Exception as e:
+                        log.warning("remove_listener failed (non-fatal): %s", e)
+
+                else:
+                    # Subsequent entities: click Customize on viewer_page, change entity, run
+                    log.info("Clicking Customize on ReportViewer for entity %r", entity)
+                    cust_clicked = False
+                    try:
+                        cust_btn = viewer_page.locator('button[ng-click="toggleLeft()"]').first
+                        if cust_btn.count() > 0 and cust_btn.is_visible(timeout=3_000):
+                            cust_btn.click()
+                            cust_clicked = True
+                            log.info("Customize clicked via ng-click selector")
+                    except Exception as ce:
+                        log.warning("Customize ng-click selector failed: %s", ce)
+
+                    if not cust_clicked:
+                        # Fallback: find by button text
+                        try:
+                            cust_result = viewer_page.evaluate("""
                                 () => {
-                                    const TARGETS = ['Excel', 'Microsoft Excel',
-                                                     'Excel 2003-2007'];
-                                    const els = Array.from(document.querySelectorAll(
-                                        'a, li, td, div[role="menuitem"], ' +
-                                        'li[role="menuitem"], span'
-                                    ));
-                                    for (const target of TARGETS) {
-                                        const el = els.find(e =>
-                                            e.textContent.trim() === target
-                                        );
-                                        if (el) {
-                                            el.scrollIntoView({block:'center'});
-                                            el.click();
-                                            return 'clicked:' + target;
-                                        }
-                                    }
-                                    const visible = els
-                                        .filter(e => e.offsetParent !== null
-                                                  && e.textContent.trim().length < 40)
-                                        .map(e => e.textContent.trim())
-                                        .filter((v, i, a) => v && a.indexOf(v) === i)
-                                        .slice(0, 30);
-                                    return 'not-found|' + visible.join(';');
+                                    const btn = Array.from(document.querySelectorAll('button'))
+                                        .find(b => b.textContent.trim() === 'Customize');
+                                    if (btn) { btn.click(); return 'clicked-text'; }
+                                    return 'not-found';
                                 }
                             """)
-                            if result and result.startswith("clicked:"):
-                                excel_clicked_in = label
-                                log.info("Excel option clicked in %s: %s", label, result)
-                                break
-                            elif result:
-                                log.debug("Excel search in %s: %s", label, result[:200])
-                        except Exception as ex:
-                            log.debug("Excel search error in %s: %s", label, ex)
-                            continue
-                    if excel_clicked_in is None:
-                        viewer_page.wait_for_timeout(500)
+                            log.info("Customize fallback: %s", cust_result)
+                            cust_clicked = cust_result != "not-found"
+                        except Exception as fe:
+                            log.warning("Customize fallback failed: %s", fe)
 
-                if excel_clicked_in is None:
-                    log.warning("Excel option not found after opening dropdown")
-                    _emit("Excel option not found",
-                          _snap(viewer_page, "excel_missing"))
-                else:
-                    # SSRS streams the .xlsx via a navigation — context-level
-                    # listener catches it whether it lands on viewer_page or
-                    # a transient popup. Allow up to 90 s.
-                    deadline = time.time() + 90
-                    while time.time() < deadline and captured_download["dl"] is None:
-                        viewer_page.wait_for_timeout(500)
+                    viewer_page.wait_for_timeout(2_000)
 
-                    dl = captured_download["dl"]
-                    if dl is not None:
-                        download_filename = (
-                            dl.suggested_filename
-                            or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
-                        )
-                        save_path = DOWNLOADS_DIR / download_filename
+                    # On viewer_page, ctx IS viewer_page
+                    _select_legal_entity(viewer_page, viewer_page, entity)
+                    _emit(f"Legal entity '{entity}' selected", _snap(viewer_page, "entity_ok"))
+
+                    # Click Run on viewer_page
+                    log.info("Clicking RUN on ReportViewer for entity %r", entity)
+                    run_result = viewer_page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+                    log.info("Run button (viewer_page): %s", run_result)
+                    if "run-not-found" in (run_result or ""):
+                        # Try frames within viewer_page
+                        for _flabel, _fc in _contexts(viewer_page):
+                            try:
+                                run_result = _fc.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
+                                if "run-clicked" in (run_result or ""):
+                                    log.info("Run button in %s: %s", _flabel, run_result)
+                                    break
+                            except Exception:
+                                continue
+
+                    viewer_page.wait_for_timeout(3_000)
+                    try:
+                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                    except Exception:
+                        pass
+
+                    # Fresh download capture for this entity
+                    captured_download = {"dl": None}
+                    popup_pages = []
+
+                    def _on_download(dl, _cap=captured_download):
+                        if _cap["dl"] is None:
+                            _cap["dl"] = dl
+                            log.info("Download event captured: %s", dl.suggested_filename)
+
+                    viewer_page.on("download", _on_download)
+                    browser.on("download", _on_download)
+
+                _emit("Opened ReportViewer — locating Export dropdown…",
+                      _snap(viewer_page, "report_viewer_loaded"))
+
+                # ── Export Excel (same logic for all entities) ────────────────
+                save_dropdown_clicked = None
+                deadline = time.time() + 30
+                while time.time() < deadline and save_dropdown_clicked is None:
+                    for label, c in _contexts(viewer_page):
                         try:
-                            dl.save_as(str(save_path))
-                            log.info("Saved download: %s", save_path)
-                            _emit(f"Export saved: {download_filename}",
-                                  _snap(viewer_page, "after_download"))
-                        except Exception as se:
-                            log.warning("save_as failed: %s", se)
+                            trigger = c.locator(
+                                'a[title="Export drop down menu"]'
+                            ).first
+                            if trigger.count() > 0 and trigger.is_visible(timeout=500):
+                                trigger.click()
+                                save_dropdown_clicked = label
+                                log.info("Save/Export dropdown clicked in %s", label)
+                                break
+                        except Exception:
+                            continue
+                    if save_dropdown_clicked is None:
+                        viewer_page.wait_for_timeout(500)
+
+                download_filename = None
+
+                if save_dropdown_clicked is None:
+                    log.warning("Save/Export dropdown trigger never appeared")
+                    _emit("Save/Export dropdown not found",
+                          _snap(viewer_page, "save_missing"))
+                else:
+                    viewer_page.wait_for_timeout(1_500)
+                    _emit("Save dropdown opened — clicking Excel…",
+                          _snap(viewer_page, "save_opened"))
+
+                    excel_clicked_in = None
+                    deadline = time.time() + 20
+                    while time.time() < deadline and excel_clicked_in is None:
+                        for label, c in _contexts(viewer_page):
+                            try:
+                                result = c.evaluate("""
+                                    () => {
+                                        const TARGETS = ['Excel', 'Microsoft Excel',
+                                                         'Excel 2003-2007'];
+                                        const els = Array.from(document.querySelectorAll(
+                                            'a, li, td, div[role="menuitem"], ' +
+                                            'li[role="menuitem"], span'
+                                        ));
+                                        for (const target of TARGETS) {
+                                            const el = els.find(e =>
+                                                e.textContent.trim() === target
+                                            );
+                                            if (el) {
+                                                el.scrollIntoView({block:'center'});
+                                                el.click();
+                                                return 'clicked:' + target;
+                                            }
+                                        }
+                                        const visible = els
+                                            .filter(e => e.offsetParent !== null
+                                                      && e.textContent.trim().length < 40)
+                                            .map(e => e.textContent.trim())
+                                            .filter((v, i, a) => v && a.indexOf(v) === i)
+                                            .slice(0, 30);
+                                        return 'not-found|' + visible.join(';');
+                                    }
+                                """)
+                                if result and result.startswith("clicked:"):
+                                    excel_clicked_in = label
+                                    log.info("Excel option clicked in %s: %s", label, result)
+                                    break
+                                elif result:
+                                    log.debug("Excel search in %s: %s", label, result[:200])
+                            except Exception as ex:
+                                log.debug("Excel search error in %s: %s", label, ex)
+                                continue
+                        if excel_clicked_in is None:
+                            viewer_page.wait_for_timeout(500)
+
+                    if excel_clicked_in is None:
+                        log.warning("Excel option not found after opening dropdown")
+                        _emit("Excel option not found",
+                              _snap(viewer_page, "excel_missing"))
                     else:
-                        log.warning(
-                            "Excel clicked but no download in 90 s "
-                            "(popups seen: %d)", len(popup_pages),
-                        )
-                        _emit("Excel clicked — download not captured",
-                              _snap(viewer_page, "after_excel"))
+                        deadline = time.time() + 90
+                        while time.time() < deadline and captured_download["dl"] is None:
+                            viewer_page.wait_for_timeout(500)
+
+                        dl = captured_download["dl"]
+                        if dl is not None:
+                            download_filename = (
+                                dl.suggested_filename
+                                or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
+                            )
+                            save_path = DOWNLOADS_DIR / download_filename
+                            try:
+                                dl.save_as(str(save_path))
+                                log.info("Saved download: %s", save_path)
+                                _emit(f"Export saved: {download_filename}",
+                                      _snap(viewer_page, "after_download"))
+                            except Exception as se:
+                                log.warning("save_as failed: %s", se)
+                        else:
+                            log.warning(
+                                "Excel clicked but no download in 90 s "
+                                "(popups seen: %d)", len(popup_pages),
+                            )
+                            _emit("Excel clicked — download not captured",
+                                  _snap(viewer_page, "after_excel"))
+
+                results.append({"entity": entity, "download_filename": download_filename})
+                if entity_cb:
+                    try:
+                        entity_cb(entity, download_filename)
+                    except Exception as ecb_err:
+                        log.warning("entity_cb raised: %s", ecb_err)
+
+                # Clean up download listener for this entity before next iteration
+                try:
+                    browser.remove_listener("download", _on_download)
+                except Exception:
+                    pass
+                try:
+                    viewer_page.remove_listener("download", _on_download)
+                except Exception:
+                    pass
 
             try:
-                browser.remove_listener("download", _on_download)
                 browser.remove_listener("page", _on_popup)
             except Exception:
                 pass
 
-            screenshot_name = _snap(page, "report_viewer_final")
+            screenshot_name = _snap(viewer_page or page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
             return {
-                "url": page.url,
+                "results": results,
                 "screenshot_filename": screenshot_name,
-                "download_filename": download_filename,
             }
 
         except Exception as exc:

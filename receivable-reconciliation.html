@@ -806,74 +806,58 @@
   // ─── Report Viewer navigation ────────────────────────────────────────────────
   async function openReportViewer() {
     const btn = document.getElementById('btnNav');
-
-    if (selectedEntities.length === 0) {
-      alert('Please select at least one location first.');
-      return;
-    }
+    if (selectedEntities.length === 0) { alert('Please select at least one location first.'); return; }
 
     btn.disabled = true;
-
     const total = selectedEntities.length;
-    let fetched = 0;
-    let issues = 0;
-
+    let fetched = 0, issues = 0;
     setStats(0, total, 0, 0);
-
     addLog(`Starting Report Viewer for ${total} location${total > 1 ? 's' : ''}…`, 'info');
 
-    for (const entity of selectedEntities) {
-      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> ${fetched + 1} / ${total}`;
-      addLog(`[${fetched + 1}/${total}] Launching browser for ${entity}…`, 'info');
+    try {
+      const resp = await fetch('/api/r365/report-viewer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          legal_entities: selectedEntities,
+          start_date: document.getElementById('r365StartDate').value || null,
+          end_date:   document.getElementById('r365EndDate').value   || null,
+          show_unapproved: r365ShowUnapproved,
+          calendar:        r365Calendar,
+        }),
+      });
 
-      try {
-        const resp = await fetch('/api/r365/report-viewer', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            legal_entity: entity,
-            start_date: document.getElementById('r365StartDate').value || null,
-            end_date:   document.getElementById('r365EndDate').value   || null,
-            show_unapproved: r365ShowUnapproved,
-            calendar:        r365Calendar,
-          }),
-        });
-
-        if (!resp.ok) {
-          const txt = await resp.text();
-          addLog(`[${entity}] Server error (${resp.status}): ${txt.slice(0, 300)}`, 'error');
-          issues++;
-        } else {
-          let entityError = false;
-          await readSSE(resp, (evType, data) => {
-            if (evType !== 'rv') return;
-            if (data.type === 'step') {
-              addLog(`[${entity}] ${data.message}`, 'info');
-            } else if (data.type === 'done') {
-              addLog(`[${entity}] Export complete`, 'success');
-              if (data.download_filename) {
-                addLog(`<a href="/downloads/${encodeURIComponent(data.download_filename)}" style="color:var(--green);font-weight:600;" download>⬇ ${entity}: ${data.download_filename}</a>`, 'success');
-              }
-            } else if (data.type === 'error') {
-              addLog(`[${entity}] Error: ${data.message}`, 'error');
-              entityError = true;
-            }
-          });
-          if (entityError) issues++;
-        }
-      } catch (e) {
-        addLog(`[${entity}] Request failed: ${e.message}`, 'error');
-        issues++;
+      if (!resp.ok) {
+        const txt = await resp.text();
+        addLog(`Server error (${resp.status}): ${txt.slice(0, 300)}`, 'error');
+        return;
       }
 
-      fetched++;
-      setStats(fetched, total, fetched - issues, issues);
+      await readSSE(resp, (evType, data) => {
+        if (evType !== 'rv') return;
+        if (data.type === 'step') {
+          addLog(data.message, 'info');
+        } else if (data.type === 'entity_done') {
+          fetched++;
+          setStats(fetched, total, fetched - issues, issues);
+          addLog(`[${data.entity}] Export complete`, 'success');
+          if (data.download_filename) {
+            addLog(`<a href="/downloads/${encodeURIComponent(data.download_filename)}" style="color:var(--green);font-weight:600;" download>⬇ ${data.entity}: ${data.download_filename}</a>`, 'success');
+          }
+        } else if (data.type === 'done') {
+          addLog(`Done — ${fetched} location${fetched > 1 ? 's' : ''} processed, ${issues} error${issues !== 1 ? 's' : ''}.`, issues > 0 ? 'warn' : 'success');
+        } else if (data.type === 'error') {
+          issues++;
+          setStats(fetched, total, fetched - issues, issues);
+          addLog('Error: ' + data.message, 'error');
+        }
+      });
+    } catch (e) {
+      addLog('Request failed: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Run Report Viewer`;
     }
-
-    addLog(`Done — ${fetched} location${fetched > 1 ? 's' : ''} processed, ${issues} error${issues !== 1 ? 's' : ''}.`, issues > 0 ? 'warn' : 'success');
-
-    btn.disabled = false;
-    btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Run Report Viewer`;
   }
 
   // ─── State ───────────────────────────────────────────────────────────────────
