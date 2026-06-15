@@ -967,28 +967,30 @@ def open_report_viewer(
                             try:
                                 result = c.evaluate("""
                                     () => {
-                                        const TARGETS = ['Excel', 'Microsoft Excel',
-                                                         'Excel 2003-2007'];
+                                        // Match any element whose text contains "excel"
+                                        // (case-insensitive) — covers "Excel", "Microsoft Excel",
+                                        // "Excel (.xlsx)", "Excel 2007-2013 (.xlsx)", etc.
                                         const els = Array.from(document.querySelectorAll(
                                             'a, li, td, div[role="menuitem"], ' +
-                                            'li[role="menuitem"], span'
+                                            'li[role="menuitem"], span, input[type="button"]'
                                         ));
-                                        for (const target of TARGETS) {
-                                            const el = els.find(e =>
-                                                e.textContent.trim() === target
-                                            );
-                                            if (el) {
-                                                el.scrollIntoView({block:'center'});
-                                                el.click();
-                                                return 'clicked:' + target;
-                                            }
+                                        const excelEl = els.find(e => {
+                                            const t = e.textContent.trim().toLowerCase();
+                                            return t.includes('excel') && t.length < 60;
+                                        });
+                                        if (excelEl) {
+                                            excelEl.scrollIntoView({block:'center'});
+                                            excelEl.click();
+                                            return 'clicked:' + excelEl.textContent.trim();
                                         }
+                                        // Log ALL visible short-text elements so we can
+                                        // diagnose what the dropdown actually contains.
                                         const visible = els
                                             .filter(e => e.offsetParent !== null
-                                                      && e.textContent.trim().length < 40)
+                                                      && e.textContent.trim().length < 60)
                                             .map(e => e.textContent.trim())
                                             .filter((v, i, a) => v && a.indexOf(v) === i)
-                                            .slice(0, 30);
+                                            .slice(0, 40);
                                         return 'not-found|' + visible.join(';');
                                     }
                                 """)
@@ -997,9 +999,9 @@ def open_report_viewer(
                                     log.info("Excel option clicked in %s: %s", label, result)
                                     break
                                 elif result:
-                                    log.debug("Excel search in %s: %s", label, result[:200])
+                                    log.info("Excel search in %s: %s", label, result[:300])
                             except Exception as ex:
-                                log.debug("Excel search error in %s: %s", label, ex)
+                                log.info("Excel search error in %s: %s", label, ex)
                                 continue
                         if excel_clicked_in is None:
                             viewer_page.wait_for_timeout(500)
