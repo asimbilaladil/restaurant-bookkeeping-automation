@@ -273,11 +273,30 @@ def r365_report_viewer():
     """
     body = request.get_json(silent=True) or {}
     legal_entity = (body.get("legal_entity") or "").strip() or "LCF Airtex LLC"
-    log.info("Report Viewer requested for legal_entity=%r (body=%r)", legal_entity, body)
+    show_unapproved = (body.get("show_unapproved") or "Yes").strip()
+    calendar = (body.get("calendar") or "Fiscal").strip()
+
+    start_date = None
+    end_date = None
+    try:
+        if body.get("start_date"):
+            start_date = date.fromisoformat(body["start_date"])
+    except ValueError:
+        pass
+    try:
+        if body.get("end_date"):
+            end_date = date.fromisoformat(body["end_date"])
+    except ValueError:
+        pass
+
+    log.info(
+        "Report Viewer: entity=%r start=%s end=%s unapproved=%r calendar=%r",
+        legal_entity, start_date, end_date, show_unapproved, calendar,
+    )
 
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(open_report_viewer, legal_entity)
+        future = ex.submit(open_report_viewer, legal_entity, start_date, end_date, show_unapproved, calendar)
         result = future.result(timeout=300)
 
     if "error" in result:

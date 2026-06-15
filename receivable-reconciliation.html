@@ -390,6 +390,25 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spin { animation: spin 0.8s linear infinite; display: inline-block; }
 
+    /* ─── Toggle button group ─── */
+    .toggle-group { display: flex; }
+    .toggle-btn {
+      height: 32px;
+      padding: 0 13px;
+      border: 1.5px solid var(--border2);
+      background: var(--white);
+      color: var(--sub);
+      font-family: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .toggle-btn:first-child { border-radius: 6px 0 0 6px; border-right-width: 0.75px; }
+    .toggle-btn:last-child  { border-radius: 0 6px 6px 0; border-left-width: 0.75px; }
+    .toggle-btn.active { background: var(--cyan); color: #fff; border-color: var(--cyan); }
+    .toggle-btn:hover:not(.active) { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-lt); }
+
     /* ─── Location pill on the launcher button row ─── */
     .count-badge {
       display: inline-flex;
@@ -549,6 +568,31 @@
     <div>
       <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:4px;">Step 1 — Navigate R365</div>
       <div style="font-size:0.82rem;color:var(--sub);margin-bottom:12px;">Open a browser session, log into Restaurant365, and go to the Report Viewer page.</div>
+      <!-- Report filter controls -->
+      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="field">
+          <label>Start Date</label>
+          <input type="date" id="r365StartDate" />
+        </div>
+        <div class="field">
+          <label>End Date</label>
+          <input type="date" id="r365EndDate" />
+        </div>
+        <div class="field">
+          <label>Show Unapproved</label>
+          <div class="toggle-group">
+            <button class="toggle-btn" id="btnUnapprovedNo" onclick="setFilterToggle('unapproved','No')">No</button>
+            <button class="toggle-btn active" id="btnUnapprovedYes" onclick="setFilterToggle('unapproved','Yes')">Yes</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Calendar</label>
+          <div class="toggle-group">
+            <button class="toggle-btn" id="btnCalOperational" onclick="setFilterToggle('calendar','Operational')">Operational</button>
+            <button class="toggle-btn active" id="btnCalFiscal" onclick="setFilterToggle('calendar','Fiscal')">Fiscal</button>
+          </div>
+        </div>
+      </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-outline" id="btnLocation" onclick="openEntityPanel()">
           <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -735,6 +779,22 @@
   });
 </script>
 <script>
+  // ─── Report filter state ─────────────────────────────────────────────────────
+  let r365ShowUnapproved = "Yes";
+  let r365Calendar = "Fiscal";
+
+  function setFilterToggle(group, value) {
+    if (group === "unapproved") {
+      r365ShowUnapproved = value;
+      document.getElementById("btnUnapprovedNo").classList.toggle("active", value === "No");
+      document.getElementById("btnUnapprovedYes").classList.toggle("active", value === "Yes");
+    } else if (group === "calendar") {
+      r365Calendar = value;
+      document.getElementById("btnCalOperational").classList.toggle("active", value === "Operational");
+      document.getElementById("btnCalFiscal").classList.toggle("active", value === "Fiscal");
+    }
+  }
+
   // ─── Report Viewer navigation ────────────────────────────────────────────────
   async function openReportViewer() {
     const btn = document.getElementById('btnNav');
@@ -758,9 +818,21 @@
       const resp = await fetch('/api/r365/report-viewer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ legal_entity: selectedEntity }),
+        body: JSON.stringify({
+          legal_entity: selectedEntity,
+          start_date: document.getElementById('r365StartDate').value || null,
+          end_date:   document.getElementById('r365EndDate').value   || null,
+          show_unapproved: r365ShowUnapproved,
+          calendar:        r365Calendar,
+        }),
       });
-      const data = await resp.json();
+      const raw = await resp.text();
+      let data;
+      try { data = JSON.parse(raw); } catch (_) {
+        logEl.style.color = '#f87171';
+        logEl.textContent = `Server error (${resp.status}): ${raw.slice(0, 300)}`;
+        return;
+      }
       if (!resp.ok || data.error) {
         logEl.style.color = '#f87171';
         logEl.textContent = 'Error: ' + (data.error || 'Unknown error');
@@ -788,9 +860,16 @@
 
   // ─── Init ────────────────────────────────────────────────────────────────────
   document.addEventListener("DOMContentLoaded", async () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    document.getElementById("dateInput").value = d.toISOString().slice(0, 10);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    document.getElementById("dateInput").value = yesterday.toISOString().slice(0, 10);
+
+    // Default R365 report date range: first of current month → today
+    const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    document.getElementById("r365StartDate").value = firstOfMonth.toISOString().slice(0, 10);
+    document.getElementById("r365EndDate").value   = today.toISOString().slice(0, 10);
+
     await loadEstablishments();
   });
 

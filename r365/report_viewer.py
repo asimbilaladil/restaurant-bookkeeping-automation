@@ -5,6 +5,7 @@ Navigate R365: My Reports → Accounting tab → GL Account Detail Export Custom
 
 import logging
 import uuid
+from datetime import date as date_type
 
 from playwright.sync_api import sync_playwright, Frame
 
@@ -60,13 +61,58 @@ def _find_customize_ctx(page):
     return None, {}
 
 
-def open_report_viewer(legal_entity: str = "LCF Airtex LLC") -> dict:
+def _set_datepicker(ctx, page, placeholder: str, date_str: str) -> str:
+    """Fill an AngularJS Material datepicker input (format: M/D/YYYY)."""
+    try:
+        inp = ctx.locator(f'input.md-datepicker-input[placeholder="{placeholder}"]')
+        inp.click(timeout=5_000)
+        inp.select_text()
+        inp.type(date_str, delay=50)
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(600)
+        return f"set-{placeholder}-to-{date_str}"
+    except Exception as e:
+        log.warning("Datepicker [%s] failed: %s", placeholder, e)
+        return f"failed: {e}"
+
+
+def _click_button_group(ctx, label_text: str, option_text: str) -> str:
+    """Click a specific option inside an AngularJS ButtonGroup by its label span text."""
+    result = ctx.evaluate(f"""
+        () => {{
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const labelSpan = spans.find(s => s.textContent.trim() === {repr(label_text)});
+            if (!labelSpan) return 'label-not-found: ' + {repr(label_text)};
+            let parent = labelSpan;
+            for (let i = 0; i < 10; i++) {{
+                parent = parent.parentElement;
+                if (!parent) return 'parent-exhausted';
+                const btns = Array.from(parent.querySelectorAll('button.groupX'));
+                if (btns.length === 0) continue;
+                const target = btns.find(b => b.textContent.trim() === {repr(option_text)});
+                if (target) {{ target.click(); return 'clicked: ' + {repr(option_text)}; }}
+                return 'option-not-found: ' + {repr(option_text)} + ' in [' + btns.map(b => b.textContent.trim()).join(', ') + ']';
+            }}
+            return 'not-found';
+        }}
+    """)
+    log.info("ButtonGroup [%s=%s]: %s", label_text, option_text, result)
+    return result
+
+
+def open_report_viewer(
+    legal_entity: str = "LCF Airtex LLC",
+    start_date: date_type | None = None,
+    end_date: date_type | None = None,
+    show_unapproved: str = "Yes",
+    calendar: str = "Fiscal",
+) -> dict:
     with sync_playwright() as pw:
         browser = pw.chromium.launch_persistent_context(
             PROFILE_DIR,
-            headless=False,
-            args=["--start-maximized"],
-            no_viewport=True,
+            headless=True,
+            viewport={"width": 1440, "height": 900},
+            args=["--enable-features=DnsOverHttps"],
         )
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
@@ -616,6 +662,29 @@ def open_report_viewer(legal_entity: str = "LCF Airtex LLC") -> dict:
             """)
             log.info("Entity OK: %s", le_ok)
             page.wait_for_timeout(2_000)
+
+            # ── Step 17: Set Start / End date range ──────────────────────────
+            if start_date:
+                s_str = f"{start_date.month}/{start_date.day}/{start_date.year}"
+                log.info("Setting Start date to %s", s_str)
+                r = _set_datepicker(ctx, page, "Start", s_str)
+                log.info("Start date result: %s", r)
+
+            if end_date:
+                e_str = f"{end_date.month}/{end_date.day}/{end_date.year}"
+                log.info("Setting End date to %s", e_str)
+                r = _set_datepicker(ctx, page, "End", e_str)
+                log.info("End date result: %s", r)
+
+            # ── Step 18: Set Show Unapproved toggle ──────────────────────────
+            log.info("Setting Show Unapproved to %r", show_unapproved)
+            _click_button_group(ctx, "Show Unapproved", show_unapproved)
+            page.wait_for_timeout(400)
+
+            # ── Step 19: Set Calendar toggle ─────────────────────────────────
+            log.info("Setting Calendar to %r", calendar)
+            _click_button_group(ctx, "Calendar", calendar)
+            page.wait_for_timeout(400)
 
             screenshot_name = f"report_viewer_{uuid.uuid4().hex[:8]}.png"
             page.screenshot(path=f"/tmp/{screenshot_name}", full_page=False)
