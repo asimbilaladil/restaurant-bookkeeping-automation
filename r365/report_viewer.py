@@ -6,10 +6,13 @@ Navigate R365: My Reports → Accounting tab → GL Account Detail Export Custom
 import logging
 import uuid
 from datetime import date as date_type
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright, Frame
 
 from .session import PROFILE_DIR, ensure_logged_in_r365
+
+DOWNLOADS_DIR = Path("/opt/accounts/app/downloads")
 
 log = logging.getLogger(__name__)
 
@@ -712,25 +715,111 @@ def open_report_viewer(
                 filters_shot,
             )
 
-            # ── Step 20: Click Run ────────────────────────────────────────────
-            log.info("Clicking Run button")
-            run_result = ctx.evaluate("""
+            # ── Step 20: Click the dropdown arrow next to Run ────────────────
+            log.info("Opening Export dropdown")
+            _eval_all = [ctx, page] if ctx != page else [ctx]
+            dropdown = ctx.evaluate("""
                 () => {
-                    const byClass = document.querySelector('button.runBTN');
-                    if (byClass) { byClass.scrollIntoView({block:'center'}); byClass.click(); return 'clicked-runBTN'; }
-                    const byText = Array.from(document.querySelectorAll('button'))
-                        .find(b => b.textContent.trim() === 'Run' && b.offsetParent !== null);
-                    if (byText) { byText.scrollIntoView({block:'center'}); byText.click(); return 'clicked-by-text'; }
-                    return 'run-not-found';
+                    const btn = document.querySelector('button.quickRunBTN');
+                    if (btn) { btn.scrollIntoView({block:'center'}); btn.click(); return 'dropdown-clicked'; }
+                    return 'not-found';
                 }
             """)
-            log.info("Run click: %s", run_result)
-            page.wait_for_timeout(5_000)  # wait for report to start rendering
+            log.info("Dropdown: %s", dropdown)
+            page.wait_for_timeout(1_500)
+
+            # ── Step 21: Click Export from the menu ──────────────────────────
+            # AngularJS Material menus may portal to body — try both ctx and page
+            export_click = "not-found"
+            for ec in _eval_all:
+                export_click = ec.evaluate(r"""
+                    () => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        const exp = btns.find(b => b.textContent.trim() === 'Export'
+                                                   && b.offsetParent !== null);
+                        if (exp) { exp.click(); return 'export-clicked'; }
+                        const spans = Array.from(document.querySelectorAll('span[md-menu-align-target]'));
+                        const s = spans.find(x => x.textContent.trim() === 'Export' && x.offsetParent !== null);
+                        if (s) { const p = s.closest('button'); if (p) { p.click(); return 'export-via-span'; } }
+                        return 'not-found';
+                    }
+                """)
+                if export_click != "not-found":
+                    break
+            log.info("Export click: %s", export_click)
+            page.wait_for_timeout(2_500)
+
+            export_dialog_shot = _snap(page, "export_dialog")
+            _emit("Export dialog opened — selecting format…", export_dialog_shot)
+
+            # ── Step 22: Select Excel format if a picker is present ───────────
+            for ec in _eval_all:
+                fmt = ec.evaluate("""
+                    () => {
+                        for (const sel of document.querySelectorAll('select')) {
+                            const opt = Array.from(sel.options).find(o => /excel/i.test(o.text));
+                            if (opt) {
+                                sel.value = opt.value;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                return 'excel-selected: ' + opt.text;
+                            }
+                        }
+                        const li = Array.from(document.querySelectorAll('option, [role="option"], li'))
+                            .find(o => /excel/i.test(o.textContent) && o.offsetParent !== null);
+                        if (li) { li.click(); return 'li-clicked: ' + li.textContent.trim(); }
+                        return 'no-picker';
+                    }
+                """)
+                log.info("Format select: %s", fmt)
+            page.wait_for_timeout(600)
+
+            # ── Step 23: Confirm dialog + capture the file download ───────────
+            DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            download_filename = None
+            try:
+                with page.expect_download(timeout=45_000) as dl_info:
+                    ok_r = "not-found"
+                    for ec in _eval_all:
+                        ok_r = ec.evaluate(r"""
+                            () => {
+                                const dialogs = Array.from(
+                                    document.querySelectorAll('md-dialog, [role="dialog"]')
+                                ).filter(d => d.offsetParent !== null);
+                                for (const dlg of dialogs) {
+                                    const btn = Array.from(dlg.querySelectorAll('button'))
+                                        .find(b => /ok|export|run|download/i.test(b.textContent.trim())
+                                                   && !b.disabled);
+                                    if (btn) { btn.click(); return 'dialog-btn: ' + btn.textContent.trim(); }
+                                }
+                                const ok = Array.from(document.querySelectorAll('button'))
+                                    .find(b => b.textContent.trim().toUpperCase() === 'OK'
+                                               && b.offsetParent !== null && !b.disabled);
+                                if (ok) { ok.click(); return 'fallback-ok'; }
+                                return 'not-found';
+                            }
+                        """)
+                        log.info("Export confirm: %s", ok_r)
+                        if ok_r != "not-found":
+                            break
+
+                dl = dl_info.value
+                download_filename = dl.suggested_filename or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
+                save_path = DOWNLOADS_DIR / download_filename
+                dl.save_as(str(save_path))
+                log.info("Saved download: %s", save_path)
+                _emit(f"Export saved: {download_filename}", _snap(page, "after_download"))
+
+            except Exception as dl_err:
+                log.warning("Download capture failed: %s", dl_err)
+                _emit("Export triggered — download not captured", _snap(page, "after_export"))
 
             screenshot_name = _snap(page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
-            _emit("Run clicked — report loading", screenshot_name)
-            return {"url": page.url, "screenshot_filename": screenshot_name}
+            return {
+                "url": page.url,
+                "screenshot_filename": screenshot_name,
+                "download_filename": download_filename,
+            }
 
         except Exception as exc:
             log.error("Error: %s", exc)

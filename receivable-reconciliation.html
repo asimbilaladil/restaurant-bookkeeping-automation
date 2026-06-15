@@ -815,10 +815,25 @@
     imgEl.style.display = 'none';
     logEl.innerHTML = '';
 
-    function _navLog(msg, color = '#8594ae') {
-      const line = document.createElement('span');
+    function _navLog(msg, color = '#8594ae', screenshot = null) {
+      const line = document.createElement('div');
       line.style.color = color;
-      line.textContent = msg;
+      line.style.display = 'flex';
+      line.style.alignItems = 'center';
+      line.style.gap = '8px';
+      const txt = document.createElement('span');
+      txt.textContent = msg;
+      line.appendChild(txt);
+      if (screenshot) {
+        const a = document.createElement('a');
+        a.href = '/screenshots/' + screenshot;
+        a.target = '_blank';
+        a.textContent = '[view]';
+        a.style.cssText = 'color:#60a5fa;font-size:0.7rem;opacity:0.75;text-decoration:none;flex-shrink:0;';
+        a.onmouseover = () => a.style.opacity = '1';
+        a.onmouseout  = () => a.style.opacity = '0.75';
+        line.appendChild(a);
+      }
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -847,19 +862,31 @@
       await readSSE(resp, (evType, data) => {
         if (evType !== 'rv') return;
         if (data.type === 'step') {
-          _navLog(data.message, '#93c5fd');
+          _navLog(data.message, '#93c5fd', data.screenshot);
           if (data.screenshot) {
             imgEl.src = '/screenshots/' + data.screenshot + '?t=' + Date.now();
             imgEl.style.display = 'block';
           }
         } else if (data.type === 'done') {
-          _navLog('Done — report loaded', '#34d399');
+          _navLog('Done — export complete', '#34d399', data.screenshot_filename);
           if (data.screenshot_filename) {
             imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
             imgEl.style.display = 'block';
           }
+          if (data.download_filename) {
+            const dlDiv = document.createElement('div');
+            dlDiv.style.marginTop = '6px';
+            dlDiv.innerHTML = `<a href="/downloads/${encodeURIComponent(data.download_filename)}"
+              style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+                     background:#059669;color:#fff;border-radius:6px;text-decoration:none;
+                     font-size:0.78rem;font-weight:600;" download>
+              ⬇ Download: ${data.download_filename}
+            </a>`;
+            logEl.appendChild(dlDiv);
+            logEl.scrollTop = logEl.scrollHeight;
+          }
         } else if (data.type === 'error') {
-          _navLog('Error: ' + data.message, '#f87171');
+          _navLog('Error: ' + data.message, '#f87171', data.screenshot_filename);
           if (data.screenshot_filename) {
             imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
             imgEl.style.display = 'block';

@@ -66,6 +66,8 @@ log = logging.getLogger(__name__)
 
 LOGS_DIR = Path("logs")
 LOGS_DIR.mkdir(exist_ok=True)
+DOWNLOADS_DIR = Path("downloads")
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 _LOG_FMT = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 
@@ -223,6 +225,12 @@ def screenshot(filename):
 @login_required
 def entity_log(filename):
     return send_from_directory(str(LOGS_DIR.resolve()), filename, mimetype="text/plain")
+
+
+@app.route("/downloads/<path:filename>")
+@login_required
+def serve_download(filename):
+    return send_from_directory(str(DOWNLOADS_DIR.resolve()), filename, as_attachment=True)
 
 
 @app.route("/api/r365/navigate", methods=["POST"])
