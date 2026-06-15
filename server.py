@@ -66,6 +66,8 @@ log = logging.getLogger(__name__)
 
 LOGS_DIR = Path("logs")
 LOGS_DIR.mkdir(exist_ok=True)
+DOWNLOADS_DIR = Path("downloads")
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 _LOG_FMT = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 
@@ -225,6 +227,12 @@ def entity_log(filename):
     return send_from_directory(str(LOGS_DIR.resolve()), filename, mimetype="text/plain")
 
 
+@app.route("/downloads/<path:filename>")
+@login_required
+def serve_download(filename):
+    return send_from_directory(str(DOWNLOADS_DIR.resolve()), filename, as_attachment=True)
+
+
 @app.route("/api/r365/navigate", methods=["POST"])
 @login_required
 def r365_navigate():
@@ -294,14 +302,40 @@ def r365_report_viewer():
         legal_entity, start_date, end_date, show_unapproved, calendar,
     )
 
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(open_report_viewer, legal_entity, start_date, end_date, show_unapproved, calendar)
-        result = future.result(timeout=300)
+    ev_queue: queue.Queue = queue.Queue()
 
-    if "error" in result:
-        return jsonify(result), 500
-    return jsonify(result)
+    def _progress(message: str, screenshot=None):
+        ev_queue.put({"type": "step", "message": message, "screenshot": screenshot})
+
+    def _run():
+        try:
+            result = open_report_viewer(
+                legal_entity, start_date, end_date, show_unapproved, calendar,
+                progress_cb=_progress,
+            )
+            ev_queue.put({"type": "done", **result})
+        except Exception as exc:
+            log.error("report-viewer error: %s", exc)
+            ev_queue.put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _stream():
+        while True:
+            try:
+                ev = ev_queue.get(timeout=300)
+            except queue.Empty:
+                yield 'event: rv\ndata: {"type":"error","message":"timeout"}\n\n'
+                break
+            yield f"event: rv\ndata: {json.dumps(ev, default=str)}\n\n"
+            if ev.get("type") in ("done", "error"):
+                break
+
+    return Response(
+        _stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/api/r365/reconcile-all", methods=["POST"])

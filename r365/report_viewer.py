@@ -6,10 +6,13 @@ Navigate R365: My Reports → Accounting tab → GL Account Detail Export Custom
 import logging
 import uuid
 from datetime import date as date_type
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright, Frame
 
 from .session import PROFILE_DIR, ensure_logged_in_r365
+
+DOWNLOADS_DIR = Path("/opt/accounts/app/downloads")
 
 log = logging.getLogger(__name__)
 
@@ -100,23 +103,41 @@ def _click_button_group(ctx, label_text: str, option_text: str) -> str:
     return result
 
 
+def _snap(page, prefix: str) -> str:
+    """Take a screenshot, save to /tmp, return filename (empty string on failure)."""
+    name = f"{prefix}_{uuid.uuid4().hex[:6]}.png"
+    try:
+        page.screenshot(path=f"/tmp/{name}", full_page=False)
+    except Exception as e:
+        log.warning("Screenshot [%s] failed: %s", prefix, e)
+        return ""
+    return name
+
+
 def open_report_viewer(
     legal_entity: str = "LCF Airtex LLC",
     start_date: date_type | None = None,
     end_date: date_type | None = None,
     show_unapproved: str = "Yes",
     calendar: str = "Fiscal",
+    progress_cb=None,
 ) -> dict:
+    def _emit(message: str, screenshot: str = ""):
+        log.info("[rv] %s", message)
+        if progress_cb:
+            progress_cb(message, screenshot or None)
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch_persistent_context(
             PROFILE_DIR,
-            headless=True,
-            viewport={"width": 1440, "height": 900},
-            args=["--enable-features=DnsOverHttps"],
+            headless=False,
+            args=["--start-maximized"],
+            no_viewport=True,
         )
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
             ensure_logged_in_r365(page, browser)
+            _emit("Logged into R365")
 
             # ── Step 1: wait for React sidebar ───────────────────────────────
             log.info("Waiting for React sidebar…")
@@ -243,9 +264,9 @@ def open_report_viewer(
                 log.warning("Accounting TAB never appeared — proceeding without clicking (sidebar would navigate away, avoided)")
             else:
                 page.wait_for_timeout(5_000)  # let the tab content render
-                ts = f"after_acct_{uuid.uuid4().hex[:6]}.png"
-                page.screenshot(path=f"/tmp/{ts}", full_page=False)
+                ts = _snap(page, "after_acct")
                 log.info("After Accounting TAB screenshot: %s", ts)
+                _emit("Opened Accounting tab in Report Viewer", ts)
                 # Sanity check: URL must still be MyReports — if it changed to /accounting/legacy/, we hit the sidebar
                 if "MyReports" not in page.url and "reports-management" not in page.url:
                     log.error("URL changed away from Reports after tab click! Now at: %s", page.url)
@@ -276,9 +297,10 @@ def open_report_viewer(
                     log.info("Poll screenshot: %s", snap)
 
             if not found:
-                dbg = f"debug_{uuid.uuid4().hex[:8]}.png"
-                page.screenshot(path=f"/tmp/{dbg}", full_page=False)
+                dbg = _snap(page, "debug")
                 return {"error": "Customize button never appeared", "screenshot_filename": dbg}
+
+            _emit("GL Account Detail Export dialog opened — configuring filters…")
 
             # ── Step 5: click Accounting tab if GL Account Detail Export not yet visible ──
             # Try to click Customize for GL Account Detail Export directly first.
@@ -387,8 +409,7 @@ def open_report_viewer(
                 log.info("Customize click after tab switch: %s", clicked)
 
             if clicked == "not-found":
-                dbg = f"debug_{uuid.uuid4().hex[:8]}.png"
-                page.screenshot(path=f"/tmp/{dbg}", full_page=False)
+                dbg = _snap(page, "debug")
                 return {"error": "Customize click failed", "screenshot_filename": dbg}
             page.wait_for_timeout(3_000)
 
@@ -446,9 +467,9 @@ def open_report_viewer(
             page.wait_for_timeout(2_500)
 
             # Pre-select screenshot
-            pre = f"pre_select_{uuid.uuid4().hex[:6]}.png"
-            page.screenshot(path=f"/tmp/{pre}", full_page=False)
+            pre = _snap(page, "pre_select")
             log.info("Pre-select screenshot: %s", pre)
+            _emit("Searching for account 1245-12 A/R-UberEats…", pre)
 
             # ── Step 10: check the "1245-12 - A/R-UberEats" checkbox ─────────
             # The dialog is AngularJS Material inside the iframe (ctx). Each
@@ -498,9 +519,9 @@ def open_report_viewer(
             log.info("Checkbox aria-checked after click: %s", verify)
 
             # Screenshot after checking — should show checkbox ticked
-            check_shot = f"checked_{uuid.uuid4().hex[:6]}.png"
-            page.screenshot(path=f"/tmp/{check_shot}", full_page=False)
+            check_shot = _snap(page, "checked")
             log.info("After-check screenshot: %s", check_shot)
+            _emit("Account 1245-12 A/R-UberEats selected", check_shot)
 
             # ── Step 11: click OK to confirm selection ───────────────────────
             # Use the exact ng-click selector — there are two buttons with
@@ -662,6 +683,7 @@ def open_report_viewer(
             """)
             log.info("Entity OK: %s", le_ok)
             page.wait_for_timeout(2_000)
+            _emit(f"Legal entity '{legal_entity}' selected", _snap(page, "entity_ok"))
 
             # ── Step 17: Set Start / End date range ──────────────────────────
             if start_date:
@@ -686,17 +708,136 @@ def open_report_viewer(
             _click_button_group(ctx, "Calendar", calendar)
             page.wait_for_timeout(400)
 
-            screenshot_name = f"report_viewer_{uuid.uuid4().hex[:8]}.png"
-            page.screenshot(path=f"/tmp/{screenshot_name}", full_page=False)
+            filters_shot = _snap(page, "filters_set")
+            _emit(
+                f"Filters set — dates: {start_date or 'default'} → {end_date or 'default'}, "
+                f"Show Unapproved: {show_unapproved}, Calendar: {calendar}",
+                filters_shot,
+            )
+
+            # ── Steps 20-23: Navigate to export URL, find dialog page, export ──
+            EXPORT_URL = (
+                "https://ayg.restaurant365.com/react/print-ssrs-report/export"
+                "/GL%20Account%20Detail%20Export"
+                "/%2FNA03%2FGL%20Account%20Detail%20Export"
+                "/System%20View/quick"
+            )
+
+            # R365 may open this route in a NEW tab via window.open().
+            # Capture any new page that opens during/after the navigation.
+            new_tabs: list = []
+            _on_page = lambda p: new_tabs.append(p)   # keep ref so we can remove it
+            browser.on("page", _on_page)
+
+            log.info("Navigating to export URL")
+            page.goto(EXPORT_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(3_000)          # let any popup settle
+            try:
+                browser.remove_listener("page", _on_page)
+            except Exception as e:
+                log.warning("remove_listener failed (non-fatal): %s", e)
+
+            # Decide which page has the printReportDialog.
+            # Check new tabs first, then the original page.
+            export_page = page
+            candidates = new_tabs + [p for p in browser.pages if p is not page] + [page]
+            seen = set()
+            for candidate in candidates:
+                if id(candidate) in seen:
+                    continue
+                seen.add(id(candidate))
+                try:
+                    candidate.wait_for_load_state("domcontentloaded", timeout=5_000)
+                    has_dlg = candidate.evaluate(
+                        "() => !!document.querySelector('[data-testid=\"printReportDialog\"]')"
+                    )
+                    log.info("Candidate %s hasDialog=%s", candidate.url[:60], has_dlg)
+                    if has_dlg:
+                        export_page = candidate
+                        break
+                except Exception as ce:
+                    log.info("Candidate check error: %s", ce)
+
+            log.info("Export page: %s (url=%s)", "same" if export_page is page else "new-tab",
+                     export_page.url)
+            _emit("Opened export page — waiting for dialog…", _snap(export_page, "export_nav"))
+
+            # Wait for the dialog — data-testid="printReportDialog"
+            try:
+                export_page.wait_for_selector(
+                    '[data-testid="printReportDialog"]', timeout=15_000
+                )
+                log.info("printReportDialog ready")
+            except Exception:
+                log.warning("printReportDialog not seen in 15s — continuing")
+            export_dialog_shot = _snap(export_page, "export_dialog")
+            _emit("Export dialog loaded — selecting Excel…", export_dialog_shot)
+
+            # ── Select Excel radio ────────────────────────────────────────────
+            # MUI renders a hidden <input> inside span.MuiButtonBase-root.
+            # check(force=True) sets the radio and dispatches change/click events
+            # that React's controlled-input system responds to.
+            excel_checked = False
+            excel_input = export_page.locator(
+                'input[name="exportFileOptions"][value="Excel"]'
+            )
+            try:
+                excel_input.wait_for(state="attached", timeout=5_000)
+                excel_input.check(force=True)
+                log.info("Excel checked via check(force=True)")
+                excel_checked = True
+            except Exception as e:
+                log.warning("check(force) failed (%s) — trying span click", e)
+                try:
+                    # Fallback: click the MuiButtonBase-root span (React's onClick target)
+                    export_page.locator(
+                        'span.MuiButtonBase-root:has(input[name="exportFileOptions"][value="Excel"])'
+                    ).click()
+                    log.info("Excel MuiButtonBase span clicked")
+                    excel_checked = True
+                except Exception as e2:
+                    log.warning("Span click also failed: %s", e2)
+
+            if not excel_checked:
+                log.warning("Could not select Excel — will export with default (PDF)")
+            page.wait_for_timeout(600)
+            _emit("Excel selected — clicking Export…", _snap(export_page, "excel_selected"))
+
+            # ── Click Export and capture download ─────────────────────────────
+            DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            download_filename = None
+            try:
+                with export_page.expect_download(timeout=45_000) as dl_info:
+                    export_btn = export_page.locator('button[data-testid="customExportButton"]')
+                    export_btn.wait_for(state="visible", timeout=5_000)
+                    export_btn.click()
+                    log.info("Export button clicked")
+
+                dl = dl_info.value
+                download_filename = dl.suggested_filename or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
+                save_path = DOWNLOADS_DIR / download_filename
+                dl.save_as(str(save_path))
+                log.info("Saved download: %s", save_path)
+                _emit(f"Export saved: {download_filename}", _snap(export_page, "after_download"))
+
+            except Exception as dl_err:
+                log.warning("Download capture failed: %s", dl_err)
+                _emit("Export triggered — download not captured",
+                      _snap(export_page, "after_export"))
+
+            screenshot_name = _snap(page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
-            return {"url": page.url, "screenshot_filename": screenshot_name}
+            return {
+                "url": page.url,
+                "screenshot_filename": screenshot_name,
+                "download_filename": download_filename,
+            }
 
         except Exception as exc:
             log.error("Error: %s", exc)
             try:
-                dbg = f"debug_{uuid.uuid4().hex[:8]}.png"
-                page.screenshot(path=f"/tmp/{dbg}", full_page=False)
-                return {"error": str(exc), "screenshot_filename": dbg}
+                dbg = _snap(page, "debug")
+                return {"error": str(exc), "screenshot_filename": dbg or None}
             except Exception:
                 return {"error": str(exc)}
         finally:
