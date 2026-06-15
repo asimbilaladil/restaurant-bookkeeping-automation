@@ -566,49 +566,44 @@
 <div class="container">
 
   <!-- R365 Report Viewer launcher -->
-  <div class="card controls-card" style="flex-direction:column;align-items:flex-start;gap:14px;margin-bottom:20px;">
-    <div>
-      <!-- Report filter controls -->
-      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:12px;">
-        <div class="field">
-          <label>Start Date</label>
-          <input type="date" id="r365StartDate" />
-        </div>
-        <div class="field">
-          <label>End Date</label>
-          <input type="date" id="r365EndDate" />
-        </div>
-        <div class="field">
-          <label>Show Unapproved</label>
-          <div class="toggle-group">
-            <button class="toggle-btn" id="btnUnapprovedNo" onclick="setFilterToggle('unapproved','No')">No</button>
-            <button class="toggle-btn active" id="btnUnapprovedYes" onclick="setFilterToggle('unapproved','Yes')">Yes</button>
-          </div>
-        </div>
-        <div class="field">
-          <label>Calendar</label>
-          <div class="toggle-group">
-            <button class="toggle-btn" id="btnCalOperational" onclick="setFilterToggle('calendar','Operational')">Operational</button>
-            <button class="toggle-btn active" id="btnCalFiscal" onclick="setFilterToggle('calendar','Fiscal')">Fiscal</button>
-          </div>
+  <div class="card controls-card" style="flex-direction:column;align-items:stretch;gap:14px;margin-bottom:20px;">
+    <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;">
+      <div class="field">
+        <label>Start Date</label>
+        <input type="date" id="r365StartDate" />
+      </div>
+      <div class="field">
+        <label>End Date</label>
+        <input type="date" id="r365EndDate" />
+      </div>
+      <div class="field">
+        <label>Show Unapproved</label>
+        <div class="toggle-group">
+          <button class="toggle-btn" id="btnUnapprovedNo" onclick="setFilterToggle('unapproved','No')">No</button>
+          <button class="toggle-btn active" id="btnUnapprovedYes" onclick="setFilterToggle('unapproved','Yes')">Yes</button>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <button class="btn btn-outline" id="btnLocation" onclick="openEntityPanel()">
-          <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M10 18s6-5.4 6-11a6 6 0 10-12 0c0 5.6 6 11 6 11z"/>
-            <circle cx="10" cy="7" r="2"/>
-          </svg>
-          Location
-          <span class="count-badge" id="cfgEntity">LCF Airtex LLC</span>
-        </button>
-        <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()">
-          <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
-          </svg>
-          Open Report Viewer in R365
-        </button>
+      <div class="field">
+        <label>Calendar</label>
+        <div class="toggle-group">
+          <button class="toggle-btn" id="btnCalOperational" onclick="setFilterToggle('calendar','Operational')">Operational</button>
+          <button class="toggle-btn active" id="btnCalFiscal" onclick="setFilterToggle('calendar','Fiscal')">Fiscal</button>
+        </div>
       </div>
+      <button class="btn btn-outline" id="btnLocation" onclick="openEntityPanel()">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10 18s6-5.4 6-11a6 6 0 10-12 0c0 5.6 6 11 6 11z"/>
+          <circle cx="10" cy="7" r="2"/>
+        </svg>
+        Location
+        <span class="count-badge" id="cfgEntity">LCF Airtex LLC</span>
+      </button>
+      <button class="btn btn-primary" id="btnNav" onclick="openReportViewer()">
+        <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+        </svg>
+        Open Report Viewer in R365
+      </button>
     </div>
     <div id="navStatus" style="display:none;width:100%;">
       <div style="background:#0d1526;border-radius:8px;overflow:hidden;">
