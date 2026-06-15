@@ -198,7 +198,7 @@
     /* ─── Stats row ─── */
     .stats-row {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 12px;
       margin-bottom: 20px;
     }
@@ -506,12 +506,34 @@
     }
     .panel-item:hover { background: #f0f1ff; }
     .panel-item.selected { background: var(--indigo-lt); }
-    .panel-item input[type="radio"] {
+    .panel-item input[type="radio"],
+    .panel-item input[type="checkbox"] {
       width: 15px; height: 15px;
       accent-color: var(--indigo);
       cursor: pointer;
       flex-shrink: 0;
     }
+    .panel-actions {
+      display: flex;
+      gap: 8px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #fafbfd;
+    }
+    .panel-action-btn {
+      flex: 1;
+      height: 28px;
+      border: 1.5px solid var(--border2);
+      background: var(--white);
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--sub);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .panel-action-btn:hover { border-color: var(--indigo); color: var(--indigo); background: var(--indigo-lt); }
     .panel-item-name { font-size: 0.82rem; font-weight: 600; color: var(--text); flex: 1; }
     .panel-item.selected .panel-item-name { color: var(--indigo); }
   </style>
@@ -552,11 +574,15 @@
 <div class="panel-overlay" id="entityOverlay" onclick="overlayClick(event)">
   <div class="side-panel">
     <div class="panel-header">
-      <h3>Select Location</h3>
+      <h3>Select Locations</h3>
       <button class="panel-close" onclick="closeEntityPanel()">✕</button>
     </div>
     <div class="panel-search-wrap">
       <input type="text" class="panel-search" id="entitySearch" placeholder="Search locations…" />
+    </div>
+    <div class="panel-actions">
+      <button class="panel-action-btn" onclick="selectAllEntities()">Select All</button>
+      <button class="panel-action-btn" onclick="clearAllEntities()">Clear All</button>
     </div>
     <div class="panel-list" id="entityList"></div>
   </div>
@@ -584,7 +610,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M10 18s6-5.4 6-11a6 6 0 10-12 0c0 5.6 6 11 6 11z"/>
             <circle cx="10" cy="7" r="2"/>
           </svg>
-          <span class="count-badge" id="cfgEntity" style="background:transparent;color:var(--text);font-weight:600;font-size:0.875rem;padding:0;">LCF Airtex LLC</span>
+          <span id="cfgEntity" style="color:var(--text);font-weight:600;font-size:0.875rem;">LCF Airtex LLC</span>
           <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" style="margin-left:auto;opacity:0.4;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
         </button>
       </div>
@@ -612,12 +638,6 @@
         Run Report Viewer
       </button>
     </div>
-    <div id="navStatus" style="display:none;width:100%;">
-      <div style="background:#0d1526;border-radius:8px;overflow:hidden;">
-        <div id="navLog" style="padding:10px 16px;font-family:'SF Mono','Fira Mono',monospace;font-size:0.76rem;color:#8594ae;max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
-      </div>
-      <img id="navScreenshot" src="" alt="R365 screenshot" style="display:none;margin-top:12px;border-radius:8px;border:1px solid var(--border);width:100%;cursor:pointer;" onclick="window.open(this.src,'_blank')" title="Click to open full size" />
-    </div>
   </div>
 
   <!-- Stats -->
@@ -635,18 +655,7 @@
       </div>
       <div class="stat-val" id="statFetched">0 <span>/ <span id="statTotal">0</span></span></div>
     </div>
-    <div class="card stat-card stat-ok">
-      <div class="stat-top">
-        <div class="stat-label">Balanced</div>
-        <div class="stat-icon">
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-          </svg>
-        </div>
-      </div>
-      <div class="stat-val stat-val--green" id="statOk">0</div>
-    </div>
-    <div class="card stat-card stat-issues">
+<div class="card stat-card stat-issues">
       <div class="stat-top">
         <div class="stat-label">Issues</div>
         <div class="stat-icon">
@@ -713,7 +722,21 @@
     "LCF Rosenberg LLC",
     "LCF Shepherd LLC",
   ];
-  let selectedEntity = "LCF Airtex LLC";
+  let selectedEntities = ["LCF Airtex LLC"];
+
+  function updateEntityButtonDisplay() {
+    const el = document.getElementById("cfgEntity");
+    if (selectedEntities.length === 0) {
+      el.textContent = "Select locations…";
+      el.style.color = "var(--muted)";
+    } else if (selectedEntities.length === 1) {
+      el.textContent = selectedEntities[0];
+      el.style.color = "var(--text)";
+    } else {
+      el.textContent = `${selectedEntities.length} locations selected`;
+      el.style.color = "var(--indigo)";
+    }
+  }
 
   function renderEntityList(filter = "") {
     const list = document.getElementById("entityList");
@@ -723,20 +746,35 @@
       .filter(n => !q || n.toLowerCase().includes(q))
       .forEach(name => {
         const id = "ent-" + name.replace(/[^a-z0-9]+/gi, "-");
+        const isSelected = selectedEntities.includes(name);
         const row = document.createElement("label");
-        row.className = "panel-item" + (name === selectedEntity ? " selected" : "");
+        row.className = "panel-item" + (isSelected ? " selected" : "");
         row.htmlFor = id;
         row.innerHTML = `
-          <input type="radio" name="legalEntity" id="${id}" value="${name.replace(/"/g, "&quot;")}" ${name === selectedEntity ? "checked" : ""}/>
+          <input type="checkbox" id="${id}" value="${name.replace(/"/g, "&quot;")}" ${isSelected ? "checked" : ""}/>
           <span class="panel-item-name">${name}</span>`;
-        row.querySelector("input").addEventListener("change", () => {
-          selectedEntity = name;
-          document.getElementById("cfgEntity").textContent = name;
-          renderEntityList(document.getElementById("entitySearch").value);
+        row.querySelector("input").addEventListener("change", (e) => {
+          if (e.target.checked) {
+            if (!selectedEntities.includes(name)) selectedEntities.push(name);
+          } else {
+            selectedEntities = selectedEntities.filter(n => n !== name);
+          }
+          row.classList.toggle("selected", e.target.checked);
+          updateEntityButtonDisplay();
         });
         list.appendChild(row);
       });
-    document.getElementById("cfgEntity").textContent = selectedEntity;
+    updateEntityButtonDisplay();
+  }
+
+  function selectAllEntities() {
+    selectedEntities = [...LEGAL_ENTITIES];
+    renderEntityList(document.getElementById("entitySearch").value);
+  }
+
+  function clearAllEntities() {
+    selectedEntities = [];
+    renderEntityList(document.getElementById("entitySearch").value);
   }
 
   function openEntityPanel()  { document.getElementById("entityOverlay").classList.add("open"); document.body.style.overflow = "hidden"; }
@@ -768,105 +806,74 @@
   // ─── Report Viewer navigation ────────────────────────────────────────────────
   async function openReportViewer() {
     const btn = document.getElementById('btnNav');
-    const statusDiv = document.getElementById('navStatus');
-    const logEl = document.getElementById('navLog');
-    const imgEl = document.getElementById('navScreenshot');
 
-    if (!selectedEntity) {
-      alert('Please select a location first.');
+    if (selectedEntities.length === 0) {
+      alert('Please select at least one location first.');
       return;
     }
 
     btn.disabled = true;
-    btn.textContent = 'Launching…';
-    statusDiv.style.display = 'block';
-    imgEl.style.display = 'none';
-    logEl.innerHTML = '';
 
-    function _navLog(msg, color = '#8594ae', screenshot = null) {
-      const line = document.createElement('div');
-      line.style.color = color;
-      line.style.display = 'flex';
-      line.style.alignItems = 'center';
-      line.style.gap = '8px';
-      const txt = document.createElement('span');
-      txt.textContent = msg;
-      line.appendChild(txt);
-      if (screenshot) {
-        const a = document.createElement('a');
-        a.href = '/screenshots/' + screenshot;
-        a.target = '_blank';
-        a.textContent = '[view]';
-        a.style.cssText = 'color:#60a5fa;font-size:0.7rem;opacity:0.75;text-decoration:none;flex-shrink:0;';
-        a.onmouseover = () => a.style.opacity = '1';
-        a.onmouseout  = () => a.style.opacity = '0.75';
-        line.appendChild(a);
-      }
-      logEl.appendChild(line);
-      logEl.scrollTop = logEl.scrollHeight;
-    }
+    const total = selectedEntities.length;
+    let fetched = 0;
+    let issues = 0;
 
-    _navLog(`Launching browser for ${selectedEntity}…`, '#93c5fd');
+    setStats(0, total, 0, 0);
 
-    try {
-      const resp = await fetch('/api/r365/report-viewer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          legal_entity: selectedEntity,
-          start_date: document.getElementById('r365StartDate').value || null,
-          end_date:   document.getElementById('r365EndDate').value   || null,
-          show_unapproved: r365ShowUnapproved,
-          calendar:        r365Calendar,
-        }),
-      });
+    addLog(`Starting Report Viewer for ${total} location${total > 1 ? 's' : ''}…`, 'info');
 
-      if (!resp.ok) {
-        const txt = await resp.text();
-        _navLog(`Server error (${resp.status}): ${txt.slice(0, 300)}`, '#f87171');
-        return;
-      }
+    for (const entity of selectedEntities) {
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> ${fetched + 1} / ${total}`;
+      addLog(`[${fetched + 1}/${total}] Launching browser for ${entity}…`, 'info');
 
-      await readSSE(resp, (evType, data) => {
-        if (evType !== 'rv') return;
-        if (data.type === 'step') {
-          _navLog(data.message, '#93c5fd', data.screenshot);
-          if (data.screenshot) {
-            imgEl.src = '/screenshots/' + data.screenshot + '?t=' + Date.now();
-            imgEl.style.display = 'block';
-          }
-        } else if (data.type === 'done') {
-          _navLog('Done — export complete', '#34d399', data.screenshot_filename);
-          if (data.screenshot_filename) {
-            imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
-            imgEl.style.display = 'block';
-          }
-          if (data.download_filename) {
-            const dlDiv = document.createElement('div');
-            dlDiv.style.marginTop = '6px';
-            dlDiv.innerHTML = `<a href="/downloads/${encodeURIComponent(data.download_filename)}"
-              style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
-                     background:#059669;color:#fff;border-radius:6px;text-decoration:none;
-                     font-size:0.78rem;font-weight:600;" download>
-              ⬇ Download: ${data.download_filename}
-            </a>`;
-            logEl.appendChild(dlDiv);
-            logEl.scrollTop = logEl.scrollHeight;
-          }
-        } else if (data.type === 'error') {
-          _navLog('Error: ' + data.message, '#f87171', data.screenshot_filename);
-          if (data.screenshot_filename) {
-            imgEl.src = '/screenshots/' + data.screenshot_filename + '?t=' + Date.now();
-            imgEl.style.display = 'block';
-          }
+      try {
+        const resp = await fetch('/api/r365/report-viewer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            legal_entity: entity,
+            start_date: document.getElementById('r365StartDate').value || null,
+            end_date:   document.getElementById('r365EndDate').value   || null,
+            show_unapproved: r365ShowUnapproved,
+            calendar:        r365Calendar,
+          }),
+        });
+
+        if (!resp.ok) {
+          const txt = await resp.text();
+          addLog(`[${entity}] Server error (${resp.status}): ${txt.slice(0, 300)}`, 'error');
+          issues++;
+        } else {
+          let entityError = false;
+          await readSSE(resp, (evType, data) => {
+            if (evType !== 'rv') return;
+            if (data.type === 'step') {
+              addLog(`[${entity}] ${data.message}`, 'info');
+            } else if (data.type === 'done') {
+              addLog(`[${entity}] Export complete`, 'success');
+              if (data.download_filename) {
+                addLog(`<a href="/downloads/${encodeURIComponent(data.download_filename)}" style="color:var(--green);font-weight:600;" download>⬇ ${entity}: ${data.download_filename}</a>`, 'success');
+              }
+            } else if (data.type === 'error') {
+              addLog(`[${entity}] Error: ${data.message}`, 'error');
+              entityError = true;
+            }
+          });
+          if (entityError) issues++;
         }
-      });
-    } catch (e) {
-      _navLog('Request failed: ' + e.message, '#f87171');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Run Report Viewer`;
+      } catch (e) {
+        addLog(`[${entity}] Request failed: ${e.message}`, 'error');
+        issues++;
+      }
+
+      fetched++;
+      setStats(fetched, total, fetched - issues, issues);
     }
+
+    addLog(`Done — ${fetched} location${fetched > 1 ? 's' : ''} processed, ${issues} error${issues !== 1 ? 's' : ''}.`, issues > 0 ? 'warn' : 'success');
+
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg> Run Report Viewer`;
   }
 
   // ─── State ───────────────────────────────────────────────────────────────────
@@ -917,7 +924,6 @@
 
   function setStats(fetched, total, ok, issues) {
     document.getElementById("statFetched").innerHTML = `${fetched} <span>/ <span id="statTotal">${total}</span></span>`;
-    document.getElementById("statOk").textContent = ok;
     document.getElementById("statIssues").textContent = issues;
   }
 

@@ -885,24 +885,53 @@ def open_report_viewer(
                 _emit("Save/Export dropdown not found",
                       _snap(viewer_page, "save_missing"))
             else:
-                viewer_page.wait_for_timeout(800)
+                viewer_page.wait_for_timeout(1_500)
                 _emit("Save dropdown opened — clicking Excel…",
                       _snap(viewer_page, "save_opened"))
 
-                # Click the Excel item — SSRS renders these as <a> with the
-                # plain text "Excel" inside a popup menu div.
+                # Click the Excel item. SSRS may render it as "Excel",
+                # "Microsoft Excel", or "Excel 2003-2007". Use JS to find and
+                # click it, and log visible menu items when not found.
                 excel_clicked_in = None
-                deadline = time.time() + 15
+                deadline = time.time() + 20
                 while time.time() < deadline and excel_clicked_in is None:
                     for label, c in _contexts(viewer_page):
                         try:
-                            opt = c.get_by_text("Excel", exact=True).first
-                            if opt.count() > 0 and opt.is_visible(timeout=500):
-                                opt.click()
+                            result = c.evaluate("""
+                                () => {
+                                    const TARGETS = ['Excel', 'Microsoft Excel',
+                                                     'Excel 2003-2007'];
+                                    const els = Array.from(document.querySelectorAll(
+                                        'a, li, td, div[role="menuitem"], ' +
+                                        'li[role="menuitem"], span'
+                                    ));
+                                    for (const target of TARGETS) {
+                                        const el = els.find(e =>
+                                            e.textContent.trim() === target
+                                        );
+                                        if (el) {
+                                            el.scrollIntoView({block:'center'});
+                                            el.click();
+                                            return 'clicked:' + target;
+                                        }
+                                    }
+                                    const visible = els
+                                        .filter(e => e.offsetParent !== null
+                                                  && e.textContent.trim().length < 40)
+                                        .map(e => e.textContent.trim())
+                                        .filter((v, i, a) => v && a.indexOf(v) === i)
+                                        .slice(0, 30);
+                                    return 'not-found|' + visible.join(';');
+                                }
+                            """)
+                            if result and result.startswith("clicked:"):
                                 excel_clicked_in = label
-                                log.info("Excel option clicked in %s", label)
+                                log.info("Excel option clicked in %s: %s", label, result)
                                 break
-                        except Exception:
+                            elif result:
+                                log.debug("Excel search in %s: %s", label, result[:200])
+                        except Exception as ex:
+                            log.debug("Excel search error in %s: %s", label, ex)
                             continue
                     if excel_clicked_in is None:
                         viewer_page.wait_for_timeout(500)
