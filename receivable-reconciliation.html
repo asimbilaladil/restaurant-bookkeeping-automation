@@ -568,8 +568,6 @@
   <!-- R365 Report Viewer launcher -->
   <div class="card controls-card" style="flex-direction:column;align-items:flex-start;gap:14px;margin-bottom:20px;">
     <div>
-      <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:4px;">Step 1 — Navigate R365</div>
-      <div style="font-size:0.82rem;color:var(--sub);margin-bottom:12px;">Open a browser session, log into Restaurant365, and go to the Report Viewer page.</div>
       <!-- Report filter controls -->
       <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:12px;">
         <div class="field">
@@ -618,24 +616,6 @@
       </div>
       <img id="navScreenshot" src="" alt="R365 screenshot" style="display:none;margin-top:12px;border-radius:8px;border:1px solid var(--border);width:100%;cursor:pointer;" onclick="window.open(this.src,'_blank')" title="Click to open full size" />
     </div>
-  </div>
-
-  <!-- Controls -->
-  <div class="card controls-card">
-    <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0;align-self:flex-end;padding-bottom:2px;">Step 2 — Run Reconciliation</div>
-    <div class="field">
-      <label>Date</label>
-      <input type="date" id="dateInput" />
-    </div>
-    <button class="btn btn-primary" id="btnRun" onclick="startReconciliation()">
-      <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
-        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
-      </svg>
-      Run Reconciliation
-    </button>
-    <button class="btn btn-outline" id="btnReset" onclick="resetUI()" style="display:none;">
-      Reset
-    </button>
   </div>
 
   <!-- Stats -->
