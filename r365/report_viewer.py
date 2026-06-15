@@ -807,29 +807,32 @@ def open_report_viewer(
             except Exception:
                 pass
 
-            # Wait up to 30s for a ReportViewer tab to appear (new tabs list
-            # was populated by the _on_page listener registered earlier).
+            # Give RUN a moment to prime R365's in-memory report state, then
+            # open the ReportViewer URL in a new tab. Per user observation,
+            # this combination works where the chevron → menu path fails:
+            # RUN primes the server-side state, the direct URL load picks it
+            # up and renders the SSRS report (with its built-in Save/Export
+            # toolbar) without the .NET NullReferenceException.
+            page.wait_for_timeout(3_000)
+            REPORT_VIEWER_URL = "https://ayg.restaurant365.com/#/ReportViewer"
+
+            # Prefer a tab R365 spawned itself; otherwise open one ourselves.
             viewer_page = None
-            deadline = time.time() + 30
-            while time.time() < deadline and viewer_page is None:
-                for p in list(browser.pages):
-                    try:
-                        if "ReportViewer" in (p.url or ""):
-                            viewer_page = p
-                            break
-                    except Exception:
-                        continue
-                if viewer_page is None:
-                    page.wait_for_timeout(500)
+            for p in list(browser.pages):
+                try:
+                    if "ReportViewer" in (p.url or ""):
+                        viewer_page = p
+                        break
+                except Exception:
+                    continue
 
             if viewer_page is None:
-                # Fallback: navigate the original page to /#/ReportViewer
-                log.warning("No ReportViewer tab appeared — navigating in place")
-                page.evaluate(
-                    "() => window.location.hash = '#/ReportViewer'"
-                )
-                page.wait_for_timeout(3_000)
-                viewer_page = page
+                log.info("Opening ReportViewer in new tab: %s", REPORT_VIEWER_URL)
+                viewer_page = browser.new_page()
+                try:
+                    viewer_page.goto(REPORT_VIEWER_URL, wait_until="domcontentloaded")
+                except Exception as ge:
+                    log.warning("ReportViewer goto warning: %s", ge)
 
             log.info("ReportViewer: %s", viewer_page.url[:120])
             try:
