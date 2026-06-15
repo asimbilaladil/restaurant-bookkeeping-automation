@@ -843,157 +843,132 @@ def open_report_viewer(
             except Exception as e:
                 log.warning("remove_listener failed (non-fatal): %s", e)
 
-            _emit("Opened ReportViewer — locating Save/Export…",
+            _emit("Opened ReportViewer — clicking Custom Export…",
                   _snap(viewer_page, "report_viewer_loaded"))
 
-            # ── Click the SSRS Save/Export dropdown, then choose Excel ──────
-            # R365's ReportViewer renders an SSRS toolbar (often inside an
-            # iframe). The export trigger is typically an <input type=image>
-            # with title="Export drop down menu" or a button with title/
-            # aria-label of "Save" or "Export". After clicking, a dropdown
-            # appears containing <a>Excel</a>.
-            FIND_AND_CLICK_SAVE_JS = """
-                () => {
-                    function visible(el) {
-                        if (!el || !(el instanceof Element)) return false;
-                        const r = el.getBoundingClientRect();
-                        if (r.width <= 0 || r.height <= 0) return false;
-                        const cs = getComputedStyle(el);
-                        if (cs.visibility === 'hidden' || cs.display === 'none')
-                            return false;
-                        return true;
-                    }
-                    const sels = [
-                        'input[type="image"][title*="Export" i]',
-                        'input[type="image"][title*="Save" i]',
-                        'a[title*="Export" i]',
-                        'button[title*="Export" i]',
-                        'button[aria-label*="Export" i]',
-                        '[aria-label="Save"]',
-                        '[title="Save"]',
-                    ];
-                    for (const sel of sels) {
-                        const el = document.querySelector(sel);
-                        if (el && visible(el)) {
-                            el.scrollIntoView({block:'center'});
-                            el.click();
-                            return JSON.stringify({
-                                clicked: true, sel,
-                                title: el.getAttribute('title') || '',
-                                aria: el.getAttribute('aria-label') || '',
-                            });
-                        }
-                    }
-                    return JSON.stringify({clicked: false});
-                }
-            """
-            FIND_AND_CLICK_EXCEL_OPTION_JS = """
-                () => {
-                    function visible(el) {
-                        if (!el || !(el instanceof Element)) return false;
-                        const r = el.getBoundingClientRect();
-                        if (r.width <= 0 || r.height <= 0) return false;
-                        const cs = getComputedStyle(el);
-                        if (cs.visibility === 'hidden' || cs.display === 'none')
-                            return false;
-                        return true;
-                    }
-                    const cands = Array.from(document.querySelectorAll(
-                        'a, button, [role="menuitem"], div'
-                    )).filter(el => {
-                        if (!visible(el)) return false;
-                        const t = (el.textContent || '').trim();
-                        return /^excel( workbook)?$/i.test(t)
-                            || /excel/i.test(el.getAttribute('title') || '');
-                    });
-                    if (cands.length === 0) return JSON.stringify({clicked: false});
-                    const el = cands[0];
-                    el.scrollIntoView({block:'center'});
-                    el.click();
-                    return JSON.stringify({
-                        clicked: true,
-                        tag: el.tagName,
-                        text: (el.textContent || '').trim().slice(0, 30),
-                    });
-                }
-            """
-
-            def _all_contexts(p):
-                """Yield (label, page-or-frame) for every queryable context."""
-                yield "page", p
-                for fr in p.frames:
-                    if fr is not p.main_frame:
-                        yield f"frame[{(fr.url or '')[:60]}]", fr
-
-            def _click_in_any(p, js, label):
-                for ctx_label, c in _all_contexts(p):
-                    try:
-                        r = c.evaluate(js)
-                        if r and '"clicked":true' in r:
-                            log.info("%s clicked in %s: %s", label, ctx_label, r)
-                            return r
-                    except Exception:
-                        continue
-                return None
-
-            # Poll up to 20s for Save / Export toolbar trigger.
-            save_clicked = None
-            deadline = time.time() + 20
-            while time.time() < deadline and save_clicked is None:
-                save_clicked = _click_in_any(
-                    viewer_page, FIND_AND_CLICK_SAVE_JS, "Save/Export"
+            # ── Click the "Custom Export" button to open printReportDialog ──
+            # R365's /#/ReportViewer page shows a "Custom Export" button
+            # (aria-label="Custom Export") that opens the React print-ssrs
+            # dialog with PDF/Excel radio + EXPORT button. Because RUN primed
+            # the server-side filter state, the dialog now loads cleanly with
+            # no NullReferenceException.
+            try:
+                custom_export = viewer_page.locator(
+                    'button[aria-label="Custom Export"]'
                 )
-                if save_clicked is None:
+                custom_export.wait_for(state="visible", timeout=20_000)
+                custom_export.click()
+                log.info("Custom Export button clicked")
+            except Exception as e:
+                log.warning("Custom Export click failed: %s", e)
+
+            # Wait for the printReportDialog
+            try:
+                viewer_page.wait_for_selector(
+                    '[data-testid="printReportDialog"]', timeout=15_000
+                )
+                log.info("printReportDialog ready")
+            except Exception:
+                log.warning("printReportDialog not seen in 15s — continuing")
+            _emit("Export dialog loaded — selecting Excel…",
+                  _snap(viewer_page, "export_dialog"))
+
+            # ── Select Excel radio (MUI hidden input needs care) ─────────────
+            excel_input = viewer_page.locator(
+                'input[name="exportFileOptions"][value="Excel"]'
+            )
+            try:
+                excel_input.wait_for(state="attached", timeout=10_000)
+            except Exception as e:
+                log.warning("Excel radio not attached: %s", e)
+
+            def _excel_is_checked() -> bool:
+                try:
+                    return excel_input.is_checked()
+                except Exception:
+                    return False
+
+            excel_checked = _excel_is_checked()
+            log.info("Excel initial state: checked=%s", excel_checked)
+
+            strategies = [
+                ("role radio check",
+                 lambda: viewer_page.get_by_role(
+                     "radio", name="Excel"
+                 ).check(force=True)),
+                ("FormControlLabel click",
+                 lambda: viewer_page.locator(
+                     'label.MuiFormControlLabel-root:has(input[value="Excel"])'
+                 ).first.click()),
+                ("label-by-text click",
+                 lambda: viewer_page.locator(
+                     'label:has(input[name="exportFileOptions"][value="Excel"])'
+                 ).first.click()),
+                ("React setter + change event",
+                 lambda: viewer_page.evaluate("""
+                    () => {
+                      const el = document.querySelector(
+                        'input[name="exportFileOptions"][value="Excel"]'
+                      );
+                      if (!el) return false;
+                      const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'checked'
+                      ).set;
+                      setter.call(el, true);
+                      el.dispatchEvent(new Event('click', { bubbles: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true }));
+                      return true;
+                    }
+                 """)),
+            ]
+            for name, action in strategies:
+                if excel_checked:
+                    break
+                try:
+                    action()
+                    viewer_page.wait_for_timeout(400)
+                    excel_checked = _excel_is_checked()
+                    log.info("Strategy %r → checked=%s", name, excel_checked)
+                except Exception as e:
+                    log.warning("Strategy %r failed: %s", name, e)
+
+            _emit(
+                "Excel selected — clicking EXPORT…" if excel_checked
+                else "Excel NOT selected — exporting with default",
+                _snap(viewer_page, "excel_state"),
+            )
+
+            # ── Click EXPORT, wait for download (context-level listener) ────
+            try:
+                export_btn = viewer_page.locator(
+                    'button[data-testid="customExportButton"]'
+                )
+                export_btn.wait_for(state="visible", timeout=10_000)
+                export_btn.click()
+                log.info("EXPORT button clicked")
+
+                deadline = time.time() + 90
+                while time.time() < deadline and captured_download["dl"] is None:
                     viewer_page.wait_for_timeout(500)
 
-            if save_clicked is None:
-                log.warning("Save/Export trigger not found in ReportViewer")
-                _emit("Save/Export trigger not found",
-                      _snap(viewer_page, "save_missing"))
-            else:
-                viewer_page.wait_for_timeout(700)
-                _emit("Save/Export menu opened — selecting Excel…",
-                      _snap(viewer_page, "save_opened"))
-
-                # Wrap the Excel-option click in expect_download as a primary
-                # path (the click directly triggers the download in SSRS).
-                excel_clicked = None
-                deadline = time.time() + 10
-                while time.time() < deadline and excel_clicked is None:
-                    excel_clicked = _click_in_any(
-                        viewer_page, FIND_AND_CLICK_EXCEL_OPTION_JS, "Excel"
+                dl = captured_download["dl"]
+                if dl is None:
+                    raise TimeoutError(
+                        f"No download in 90s (popups seen: {len(popup_pages)})"
                     )
-                    if excel_clicked is None:
-                        viewer_page.wait_for_timeout(500)
-
-                if excel_clicked is None:
-                    log.warning("Excel option not found in dropdown")
-                    _emit("Excel option not found", _snap(viewer_page, "excel_missing"))
-                else:
-                    # Wait for context-level download event for up to 90s.
-                    deadline = time.time() + 90
-                    while time.time() < deadline and captured_download["dl"] is None:
-                        viewer_page.wait_for_timeout(500)
-
-                    dl = captured_download["dl"]
-                    if dl is not None:
-                        download_filename = (
-                            dl.suggested_filename
-                            or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
-                        )
-                        save_path = DOWNLOADS_DIR / download_filename
-                        try:
-                            dl.save_as(str(save_path))
-                            log.info("Saved download: %s", save_path)
-                            _emit(f"Export saved: {download_filename}",
-                                  _snap(viewer_page, "after_download"))
-                        except Exception as se:
-                            log.warning("save_as failed: %s", se)
-                    else:
-                        log.warning("Excel clicked but no download in 90s "
-                                    "(popups seen: %d)", len(popup_pages))
-                        _emit("Excel clicked — download not captured",
-                              _snap(viewer_page, "after_excel"))
+                download_filename = (
+                    dl.suggested_filename
+                    or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
+                )
+                save_path = DOWNLOADS_DIR / download_filename
+                dl.save_as(str(save_path))
+                log.info("Saved download: %s", save_path)
+                _emit(f"Export saved: {download_filename}",
+                      _snap(viewer_page, "after_download"))
+            except Exception as dl_err:
+                log.warning("Download capture failed: %s", dl_err)
+                _emit("EXPORT clicked — download not captured",
+                      _snap(viewer_page, "after_export"))
 
             try:
                 browser.remove_listener("download", _on_download)
