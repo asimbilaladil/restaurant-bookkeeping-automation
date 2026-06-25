@@ -960,7 +960,7 @@
         extra += ` <span class="log-link">Attach: ${p.attachment_status}</span>`;
       }
       if (p.log_url)               extra += ` <a href="${p.log_url}" target="_blank" class="log-link">Log</a>`;
-      if (p.status === "success" && p.je_balanced !== undefined) {
+      if (p.je_balanced !== undefined && p.je_balanced !== null) {
         setBalanceBadge(p.establishment_id, p.je_balanced, p.je_difference);
       }
       addLog(`R365 JE ${name} → ${p.status}${p.error ? ": " + p.error : ""}`, extra);
@@ -999,11 +999,14 @@
     const state = document.getElementById(`r365-state-${id}`);
     const fill  = document.getElementById(`r365-fill-${id}`);
     if (!state || !fill) return;
-    state.className = `row-state ${status}`;
-    fill.className  = `prog-fill ${status}`;
+    // 'failed' (e.g. unbalanced JE) shares the error styling.
+    const cls = status === "failed" ? "error" : status;
+    state.className = `row-state ${cls}`;
+    fill.className  = `prog-fill ${cls}`;
     if (status === "pending")      state.textContent = "Waiting";
     else if (status === "running") state.innerHTML = `<span class="spinner"></span>Posting JE`;
     else if (status === "success") state.textContent = "✓ Posted";
+    else if (status === "failed")  state.textContent = `✗ ${(error || "Unbalanced").slice(0, 28)}`;
     else if (status === "error")   state.textContent = `✗ ${(error || "Error").slice(0, 28)}`;
   }
 

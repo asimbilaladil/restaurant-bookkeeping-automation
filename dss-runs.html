@@ -178,11 +178,14 @@
       const name = r.establishment_name || EST_NAMES[r.establishment_id] || ("est " + r.establishment_id);
       const ok = r.status === "success";
       const diff = (r.je_difference == null) ? "—" : Number(r.je_difference).toFixed(2);
-      const unbal = (ok && r.je_balanced === 0) ? `<span class="badge-unbal">unbalanced</span>` : "";
+      // An unbalanced JE is recorded as failed (status !== success) with je_balanced 0.
+      const isUnbalanced = (r.je_balanced === 0 || r.je_balanced === false);
       const attach = r.attachment_status ? esc(r.attachment_status) : "—";
       const details = ok
-        ? `<span class="muted">Posted${unbal}</span>`
-        : `<span class="err-text">${esc(r.error || "Error")}</span>`;
+        ? `<span class="muted">Posted</span>`
+        : isUnbalanced
+          ? `<span class="err-text">Unbalanced (${diff})</span>`
+          : `<span class="err-text">${esc(r.error || "Error")}</span>`;
       const logCell = r.log_filename
         ? `<a class="log-link" href="/logs/${esc(r.log_filename)}" target="_blank">View</a>`
         : `<span class="muted">—</span>`;

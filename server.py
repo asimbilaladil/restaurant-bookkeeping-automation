@@ -385,7 +385,7 @@ def r365_reconcile_all():
     """
     Body: { "date": "2026-05-22", "establishments": [{"id": 32, "name": "LCF Airtex", "data": {...}}, ...] }
     Streams SSE events:
-      event: r365_progress  data: {"establishment_id": 32, "status": "running"|"success"|"error", "error": "..."}
+      event: r365_progress  data: {"establishment_id": 32, "status": "running"|"success"|"failed"|"error", "error": "..."}
       event: r365_done      data: {}
     Processes entities sequentially (one browser session at a time).
     """
@@ -427,23 +427,28 @@ def r365_reconcile_all():
                     before = result.get("before_screenshot_filename")
                     after  = result.get("screenshot_filename")
                     attach_shot = result.get("attachment_screenshot_filename")
-                    _record_run(est_id, name, target_date, "success",
-                                je_difference=result.get("je_difference", 0.0),
-                                je_balanced=result.get("je_balanced", True),
+                    je_balanced = result.get("je_balanced", True)
+                    je_difference = result.get("je_difference", 0.0)
+                    # Success means the JE actually balances. An unbalanced entry was
+                    # posted but is not correct, so it is recorded as failed.
+                    run_status = "success" if je_balanced else "failed"
+                    _record_run(est_id, name, target_date, run_status,
+                                je_difference=je_difference,
+                                je_balanced=je_balanced,
                                 attachment_status=result.get("attachment_status", "skipped"),
                                 log_filename=log_path.name)
                     event_queue.put({
                         "type": "r365_progress",
                         "establishment_id": est_id,
-                        "status": "success",
+                        "status": run_status,
                         "r365_url": result.get("url"),
                         "before_screenshot_url": f"/screenshots/{before}" if before else None,
                         "screenshot_url": f"/screenshots/{after}" if after else None,
                         "attachment_screenshot_url": f"/screenshots/{attach_shot}" if attach_shot else None,
                         "attachment_status": result.get("attachment_status", "skipped"),
                         "log_url": f"/logs/{log_path.name}",
-                        "je_difference": result.get("je_difference", 0.0),
-                        "je_balanced": result.get("je_balanced", True),
+                        "je_difference": je_difference,
+                        "je_balanced": je_balanced,
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)
