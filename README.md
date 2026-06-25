@@ -2,6 +2,8 @@
 
 Fetches daily sales data from the Revel Operations Report API and automatically fills the Journal Entry tab in Restaurant365 (R365) Daily Sales Summary for all 11 LCF establishments.
 
+> 📘 **For browser-automation internals** — exact selectors, the Kendo grid + add-row interaction sequences, how attachments are uploaded, and how Revel establishment switching works — see **[TECHNICAL.md](TECHNICAL.md)**.
+
 ---
 
 ## How It Works — End to End
