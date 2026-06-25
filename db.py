@@ -94,8 +94,8 @@ def record_run(
         return cur.lastrowid
 
 
-def get_runs(limit: int = 500, run_date: str | None = None, establishment_id=None) -> list[dict]:
-    """Return run records, newest first, optionally filtered by date / establishment."""
+def _filter_sql(run_date, establishment_id, status=None) -> tuple[str, list]:
+    """Build a shared WHERE clause + params for get_runs / count_runs."""
     clauses = []
     params: list = []
     if run_date:
@@ -104,10 +104,29 @@ def get_runs(limit: int = 500, run_date: str | None = None, establishment_id=Non
     if establishment_id is not None:
         clauses.append("establishment_id = ?")
         params.append(establishment_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    params.append(limit)
+    return where, params
+
+
+def get_runs(limit: int = 500, offset: int = 0, run_date: str | None = None,
+             establishment_id=None) -> list[dict]:
+    """Return a page of run records, newest first, optionally filtered."""
+    where, params = _filter_sql(run_date, establishment_id)
+    params += [limit, offset]
     with _lock, _connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM dss_runs{where} ORDER BY id DESC LIMIT ?", params
+            f"SELECT * FROM dss_runs{where} ORDER BY id DESC LIMIT ? OFFSET ?", params
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_runs(run_date: str | None = None, establishment_id=None,
+               status: str | None = None) -> int:
+    """Count run records matching the filters (for pagination + summary totals)."""
+    where, params = _filter_sql(run_date, establishment_id, status)
+    with _lock, _connect() as conn:
+        (n,) = conn.execute(f"SELECT COUNT(*) FROM dss_runs{where}", params).fetchone()
+    return n

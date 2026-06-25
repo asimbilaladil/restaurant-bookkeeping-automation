@@ -139,7 +139,7 @@ def dss_runs_page():
 @app.route("/api/dss-runs")
 @login_required
 def dss_runs_api():
-    """Return logged reconciliation runs (newest first), with establishment names resolved."""
+    """Return a page of logged reconciliation runs (newest first) + totals."""
     run_date = request.args.get("date") or None
     est_id = request.args.get("establishment_id")
     try:
@@ -147,16 +147,35 @@ def dss_runs_api():
     except ValueError:
         est_id = None
     try:
-        limit = min(int(request.args.get("limit", 500)), 2000)
+        per_page = min(max(int(request.args.get("per_page", 50)), 1), 200)
     except ValueError:
-        limit = 500
+        per_page = 50
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+    except ValueError:
+        page = 1
 
-    runs = db.get_runs(limit=limit, run_date=run_date, establishment_id=est_id)
+    total = db.count_runs(run_date=run_date, establishment_id=est_id)
+    pages = max((total + per_page - 1) // per_page, 1)
+    page = min(page, pages)  # clamp if filters shrank the result set
+    offset = (page - 1) * per_page
+
+    runs = db.get_runs(limit=per_page, offset=offset,
+                       run_date=run_date, establishment_id=est_id)
     # Fill in name from the establishment map if it wasn't stored.
     for r in runs:
         if not r.get("establishment_name"):
             r["establishment_name"] = ESTABLISHMENT_NAMES.get(r.get("establishment_id"), "")
-    return jsonify({"runs": runs})
+
+    success = db.count_runs(run_date=run_date, establishment_id=est_id, status="success")
+    return jsonify({
+        "runs": runs,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+        "counts": {"success": success, "failed": total - success},
+    })
 
 
 

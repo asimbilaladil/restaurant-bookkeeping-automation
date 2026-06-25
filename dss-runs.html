@@ -63,6 +63,14 @@
     .muted { color:var(--muted); }
     .empty { padding:48px 20px; text-align:center; color:var(--muted); font-size:0.9rem; }
     .badge-unbal { background:var(--amber-lt); color:var(--amber); padding:1px 7px; border-radius:6px; font-size:0.7rem; font-weight:700; margin-left:6px; }
+
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin:16px 0 4px; }
+    .pager-info { font-size:0.8rem; color:var(--sub); }
+    .pager-controls { display:flex; align-items:center; gap:8px; }
+    .pager-controls .page-ind { font-size:0.8rem; font-weight:600; color:var(--sub); min-width:120px; text-align:center; }
+    .pager .field { flex-direction:row; align-items:center; gap:7px; }
+    .pager .field label { text-transform:none; letter-spacing:0; }
+    .btn:disabled { opacity:0.45; cursor:not-allowed; box-shadow:none; }
   </style>
 </head>
 <body>
@@ -90,7 +98,7 @@
       <label for="fEst">Location</label>
       <select id="fEst"><option value="">All locations</option></select>
     </div>
-    <button class="btn primary" onclick="load()">Apply</button>
+    <button class="btn primary" onclick="applyFilters()">Apply</button>
     <button class="btn" onclick="clearFilters()">Clear</button>
     <button class="btn" onclick="load()" style="margin-left:auto;">↻ Refresh</button>
   </div>
@@ -116,6 +124,24 @@
       </tbody>
     </table>
   </div>
+
+  <div class="pager" id="pager" style="display:none;">
+    <div class="pager-info" id="pagerInfo"></div>
+    <div class="pager-controls">
+      <div class="field">
+        <label for="fPerPage">Per page</label>
+        <select id="fPerPage">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+      <button class="btn" id="prevBtn" onclick="gotoPage(currentPage - 1)">← Prev</button>
+      <span class="page-ind" id="pageInd"></span>
+      <button class="btn" id="nextBtn" onclick="gotoPage(currentPage + 1)">Next →</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -137,9 +163,25 @@
     } catch (e) { /* non-fatal */ }
   }
 
+  let currentPage = 1;
+
+  function perPage() {
+    return parseInt(document.getElementById("fPerPage").value, 10) || 50;
+  }
+
+  // Filter/per-page changes reset to the first page; Refresh keeps the page.
+  function applyFilters() { currentPage = 1; load(); }
+
+  function gotoPage(p) {
+    if (p < 1) return;
+    currentPage = p;
+    load();
+  }
+
   function clearFilters() {
     document.getElementById("fDate").value = "";
     document.getElementById("fEst").value = "";
+    currentPage = 1;
     load();
   }
 
@@ -153,21 +195,26 @@
     const params = new URLSearchParams();
     if (date) params.set("date", date);
     if (est)  params.set("establishment_id", est);
+    params.set("page", currentPage);
+    params.set("per_page", perPage());
 
     const tbody = document.getElementById("rows");
     tbody.innerHTML = `<tr><td colspan="8" class="empty">Loading…</td></tr>`;
+    document.getElementById("pager").style.display = "none";
 
-    let runs = [];
+    let j = {};
     try {
       const r = await fetch("/api/dss-runs?" + params.toString());
-      const j = await r.json();
-      runs = j.runs || [];
+      j = await r.json();
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="8" class="empty">Failed to load: ${esc(e.message)}</td></tr>`;
       return;
     }
+    const runs = j.runs || [];
+    currentPage = j.page || 1;
 
-    renderSummary(runs);
+    renderSummary(j);
+    renderPager(j);
 
     if (!runs.length) {
       tbody.innerHTML = `<tr><td colspan="8" class="empty">No runs recorded yet${date || est ? " for this filter" : ""}.</td></tr>`;
@@ -202,15 +249,36 @@
     }).join("");
   }
 
-  function renderSummary(runs) {
-    const total = runs.length;
-    const ok = runs.filter(r => r.status === "success").length;
-    const err = total - ok;
+  function renderSummary(j) {
+    // Counts come from the server and span ALL matching runs, not just this page.
+    const total = j.total || 0;
+    const ok = (j.counts && j.counts.success) || 0;
+    const err = (j.counts && j.counts.failed) || 0;
     document.getElementById("summary").innerHTML = `
       <div class="stat"><div class="num">${total}</div><div class="lbl">Total Runs</div></div>
       <div class="stat ok"><div class="num">${ok}</div><div class="lbl">Success</div></div>
       <div class="stat err"><div class="num">${err}</div><div class="lbl">Failed</div></div>`;
   }
+
+  function renderPager(j) {
+    const pager = document.getElementById("pager");
+    const total = j.total || 0;
+    if (!total) { pager.style.display = "none"; return; }
+    const page = j.page || 1;
+    const pages = j.pages || 1;
+    const per = j.per_page || perPage();
+    const first = (page - 1) * per + 1;
+    const last = Math.min(page * per, total);
+
+    document.getElementById("pagerInfo").textContent =
+      `Showing ${first}–${last} of ${total}`;
+    document.getElementById("pageInd").textContent = `Page ${page} of ${pages}`;
+    document.getElementById("prevBtn").disabled = page <= 1;
+    document.getElementById("nextBtn").disabled = page >= pages;
+    pager.style.display = "flex";
+  }
+
+  document.getElementById("fPerPage").addEventListener("change", applyFilters);
 
   loadEstablishments().then(load);
 </script>
