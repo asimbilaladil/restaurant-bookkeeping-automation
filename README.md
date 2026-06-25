@@ -26,6 +26,7 @@ POST /api/r365/navigate  (or /api/r365/reconcile-all for all at once)
   └─ Navigates to Daily Sales Summary → filters by date → clicks location row
   └─ Opens the Journal Entry tab
   └─ Reads current R365 values, compares to Revel, writes only where different
+  └─ Attaches the source Revel xlsx to the DSS form
   └─ Saves the DSS form
   └─ Returns before/after screenshots + balance difference
 ```
@@ -187,6 +188,19 @@ This means running the tool twice on the same day is safe — it will detect the
 - `4000-011 Food Sales-Tax Exempt` and `8000-06 Cash Over/Short` are **new rows** that don't exist in the default JE template. They are added via the "Select Account" input at the bottom of the grid when needed.
 - `App Reward` rows are read and tracked for the discount reconciliation calculation but never written — R365 owns that row.
 - The second `2301 Employee Tips Payable` row (auto-filled, read-only) is never touched.
+
+---
+
+## Attaching the Source xlsx
+
+Before saving, the automation attaches the original Revel Operations `.xlsx` to the DSS form so the journal entry carries its source document. This is handled by `_upload_attachment()` in `r365/journal_entry.py`, and R365's Angular form makes it surprisingly fragile:
+
+- **Two inputs share `id="attachmentsModuleInput"`** — a "Ribbon Logo" uploader (`<r365-amazon-uploader>`) and the real DSS attachments input. We resolve the one that is **not** inside `<r365-amazon-uploader>` to a single element handle, used for upload + verification so they can't diverge.
+- **The uploader rejects untrusted events.** Setting the file via `set_input_files` delivers it to R365's change handler but the file is silently dropped (it never reaches the S3 uploader). Instead we open the **native file chooser** (`expect_file_chooser` + click) so the browser fires a *trusted* `change` event the uploader accepts; `set_input_files` remains a fallback.
+- **The uploader lives on the Angular scope, not `window`.** Success is confirmed by polling `scope.AWS_S3_Uploader.files` / `scope.uploadedAttachments` (and the DOM) for the filename.
+- `attachment_status` is reported as `uploaded`, `already_present`, `failed`, or `skipped`, and is logged per run.
+
+> If R365 changes their form again and uploads start failing, the per-run log includes a `Scope uploader state: …` dump on failure (uploader status, files, `uploadedAttachments`) to diagnose the new structure.
 
 ---
 

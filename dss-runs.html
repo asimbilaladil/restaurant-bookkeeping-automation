@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DSS Run History</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#f4f6fb; --white:#fff; --border:#e4e9f2; --border2:#d0d9ea;
+      --text:#0d1526; --sub:#4b5675; --muted:#8594ae;
+      --indigo:#4f46e5; --indigo-lt:#eef2ff;
+      --green:#059669; --green-lt:#ecfdf5;
+      --red:#dc2626; --red-lt:#fef2f2;
+      --amber:#d97706; --amber-lt:#fffbeb;
+      --shadow-sm:0 1px 3px rgba(0,0,0,0.06),0 4px 12px rgba(0,0,0,0.04);
+      --r:14px;
+    }
+    body { font-family:'Inter',-apple-system,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding-bottom:80px; }
+
+    .top-bar { background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 55%,#2563eb 100%); padding:30px 32px; position:relative; overflow:hidden; }
+    .top-bar-inner { max-width:1080px; margin:0 auto; position:relative; display:flex; align-items:flex-start; justify-content:space-between; }
+    .back-link { display:inline-flex; align-items:center; gap:6px; font-size:0.78rem; font-weight:600; color:rgba(255,255,255,0.85); text-decoration:none; margin-bottom:12px; }
+    .back-link:hover { color:#fff; }
+    .top-bar h1 { font-size:1.7rem; font-weight:800; color:#fff; letter-spacing:-0.03em; margin-bottom:5px; }
+    .top-bar p { font-size:0.86rem; color:rgba(255,255,255,0.65); }
+
+    .container { max-width:1080px; margin:0 auto; padding:28px 24px 0; }
+
+    .toolbar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:14px; margin-bottom:20px; }
+    .field { display:flex; flex-direction:column; gap:5px; }
+    .field label { font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+    .field input, .field select { font-family:inherit; font-size:0.86rem; padding:8px 10px; border:1px solid var(--border2); border-radius:9px; background:var(--white); color:var(--text); min-width:160px; }
+    .btn { font-family:inherit; font-size:0.83rem; font-weight:600; padding:9px 16px; border-radius:9px; border:1px solid var(--border2); background:var(--white); color:var(--sub); cursor:pointer; }
+    .btn.primary { background:var(--indigo); color:#fff; border-color:var(--indigo); }
+    .btn:hover { box-shadow:var(--shadow-sm); }
+
+    .summary { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+    .stat { background:var(--white); border:1px solid var(--border); border-radius:12px; padding:12px 18px; min-width:120px; box-shadow:var(--shadow-sm); }
+    .stat .num { font-size:1.5rem; font-weight:800; letter-spacing:-0.02em; }
+    .stat .lbl { font-size:0.72rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; }
+    .stat.ok .num { color:var(--green); }
+    .stat.err .num { color:var(--red); }
+
+    .card { background:var(--white); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow-sm); overflow:hidden; }
+    table { width:100%; border-collapse:collapse; }
+    th { text-align:left; font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); padding:12px 16px; border-bottom:1px solid var(--border); background:#fafbfe; }
+    td { padding:11px 16px; font-size:0.84rem; border-bottom:1px solid var(--border); vertical-align:top; }
+    tr:last-child td { border-bottom:none; }
+    tr:hover td { background:#fafbff; }
+
+    .pill { display:inline-flex; align-items:center; gap:5px; padding:2px 10px; border-radius:99px; font-size:0.72rem; font-weight:700; }
+    .pill.success { background:var(--green-lt); color:var(--green); }
+    .pill.error   { background:var(--red-lt);   color:var(--red); }
+    .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+    .mono { font-variant-numeric:tabular-nums; }
+    .err-text { color:var(--red); font-size:0.8rem; max-width:340px; word-break:break-word; }
+    .log-link { color:var(--indigo); font-weight:600; text-decoration:none; font-size:0.8rem; }
+    .log-link:hover { text-decoration:underline; }
+    .muted { color:var(--muted); }
+    .empty { padding:48px 20px; text-align:center; color:var(--muted); font-size:0.9rem; }
+    .badge-unbal { background:var(--amber-lt); color:var(--amber); padding:1px 7px; border-radius:6px; font-size:0.7rem; font-weight:700; margin-left:6px; }
+  </style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div class="top-bar-inner">
+    <div>
+      <a href="/" class="back-link">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16l-6-6 6-6"/></svg>
+        Back to Dashboard
+      </a>
+      <h1>DSS Run History</h1>
+      <p>Every Daily Sales Reconciliation run, per location. Re-runs append new records — old ones are kept.</p>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="toolbar">
+    <div class="field">
+      <label for="fDate">Reconciliation date</label>
+      <input type="date" id="fDate" />
+    </div>
+    <div class="field">
+      <label for="fEst">Location</label>
+      <select id="fEst"><option value="">All locations</option></select>
+    </div>
+    <button class="btn primary" onclick="load()">Apply</button>
+    <button class="btn" onclick="clearFilters()">Clear</button>
+    <button class="btn" onclick="load()" style="margin-left:auto;">↻ Refresh</button>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Run At (UTC)</th>
+          <th>Location</th>
+          <th>Recon Date</th>
+          <th>Status</th>
+          <th>JE Diff</th>
+          <th>Attachment</th>
+          <th>Details</th>
+          <th>Log</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="8" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  let EST_NAMES = {};
+
+  async function loadEstablishments() {
+    try {
+      const r = await fetch("/api/establishments");
+      const j = await r.json();
+      EST_NAMES = j.names || {};
+      const sel = document.getElementById("fEst");
+      Object.entries(EST_NAMES)
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .forEach(([id, name]) => {
+          const o = document.createElement("option");
+          o.value = id; o.textContent = name;
+          sel.appendChild(o);
+        });
+    } catch (e) { /* non-fatal */ }
+  }
+
+  function clearFilters() {
+    document.getElementById("fDate").value = "";
+    document.getElementById("fEst").value = "";
+    load();
+  }
+
+  function esc(s) {
+    return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+  }
+
+  async function load() {
+    const date = document.getElementById("fDate").value;
+    const est  = document.getElementById("fEst").value;
+    const params = new URLSearchParams();
+    if (date) params.set("date", date);
+    if (est)  params.set("establishment_id", est);
+
+    const tbody = document.getElementById("rows");
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Loading…</td></tr>`;
+
+    let runs = [];
+    try {
+      const r = await fetch("/api/dss-runs?" + params.toString());
+      const j = await r.json();
+      runs = j.runs || [];
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Failed to load: ${esc(e.message)}</td></tr>`;
+      return;
+    }
+
+    renderSummary(runs);
+
+    if (!runs.length) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">No runs recorded yet${date || est ? " for this filter" : ""}.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = runs.map(r => {
+      const name = r.establishment_name || EST_NAMES[r.establishment_id] || ("est " + r.establishment_id);
+      const ok = r.status === "success";
+      const diff = (r.je_difference == null) ? "—" : Number(r.je_difference).toFixed(2);
+      const unbal = (ok && r.je_balanced === 0) ? `<span class="badge-unbal">unbalanced</span>` : "";
+      const attach = r.attachment_status ? esc(r.attachment_status) : "—";
+      const details = ok
+        ? `<span class="muted">Posted${unbal}</span>`
+        : `<span class="err-text">${esc(r.error || "Error")}</span>`;
+      const logCell = r.log_filename
+        ? `<a class="log-link" href="/logs/${esc(r.log_filename)}" target="_blank">View</a>`
+        : `<span class="muted">—</span>`;
+      return `<tr>
+        <td class="mono muted">${esc(r.created_at || "")}</td>
+        <td><strong>${esc(name)}</strong></td>
+        <td class="mono">${esc(r.run_date || "")}</td>
+        <td><span class="pill ${ok ? "success" : "error"}"><span class="dot"></span>${ok ? "Success" : "Failed"}</span></td>
+        <td class="mono">${diff}</td>
+        <td>${attach}</td>
+        <td>${details}</td>
+        <td>${logCell}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  function renderSummary(runs) {
+    const total = runs.length;
+    const ok = runs.filter(r => r.status === "success").length;
+    const err = total - ok;
+    document.getElementById("summary").innerHTML = `
+      <div class="stat"><div class="num">${total}</div><div class="lbl">Total Runs</div></div>
+      <div class="stat ok"><div class="num">${ok}</div><div class="lbl">Success</div></div>
+      <div class="stat err"><div class="num">${err}</div><div class="lbl">Failed</div></div>`;
+  }
+
+  loadEstablishments().then(load);
+</script>
+</body>
+</html>

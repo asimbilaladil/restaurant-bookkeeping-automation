@@ -6,3 +6,6 @@ venv/
 .~lock.*
 ._*
 /tmp/
+*.db
+server.log
+logs/

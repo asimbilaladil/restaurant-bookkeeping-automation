@@ -37,8 +37,10 @@ from werkzeug.security import check_password_hash
 
 from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
 from r365 import open_r365_journal_entry, open_report_viewer
+import db
 
 load_dotenv()
+db.init_db()
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=".")
@@ -126,6 +128,35 @@ def index():
 @login_required
 def receivable_reconciliation():
     return send_from_directory(".", "receivable-reconciliation.html")
+
+
+@app.route("/dss-runs")
+@login_required
+def dss_runs_page():
+    return send_from_directory(".", "dss-runs.html")
+
+
+@app.route("/api/dss-runs")
+@login_required
+def dss_runs_api():
+    """Return logged reconciliation runs (newest first), with establishment names resolved."""
+    run_date = request.args.get("date") or None
+    est_id = request.args.get("establishment_id")
+    try:
+        est_id = int(est_id) if est_id else None
+    except ValueError:
+        est_id = None
+    try:
+        limit = min(int(request.args.get("limit", 500)), 2000)
+    except ValueError:
+        limit = 500
+
+    runs = db.get_runs(limit=limit, run_date=run_date, establishment_id=est_id)
+    # Fill in name from the establishment map if it wasn't stored.
+    for r in runs:
+        if not r.get("establishment_name"):
+            r["establishment_name"] = ESTABLISHMENT_NAMES.get(r.get("establishment_id"), "")
+    return jsonify({"runs": runs})
 
 
 
@@ -387,6 +418,8 @@ def r365_reconcile_all():
                 with _entity_log(name, target_date) as log_path:
                     result = open_r365_journal_entry(target_date, r365_name, revel_values, pdf_path)
                 if "error" in result:
+                    _record_run(est_id, name, target_date, "error",
+                                error=result["error"], log_filename=log_path.name)
                     event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                      "status": "error", "error": result["error"],
                                      "log_url": f"/logs/{log_path.name}"})
@@ -394,6 +427,11 @@ def r365_reconcile_all():
                     before = result.get("before_screenshot_filename")
                     after  = result.get("screenshot_filename")
                     attach_shot = result.get("attachment_screenshot_filename")
+                    _record_run(est_id, name, target_date, "success",
+                                je_difference=result.get("je_difference", 0.0),
+                                je_balanced=result.get("je_balanced", True),
+                                attachment_status=result.get("attachment_status", "skipped"),
+                                log_filename=log_path.name)
                     event_queue.put({
                         "type": "r365_progress",
                         "establishment_id": est_id,
@@ -409,6 +447,7 @@ def r365_reconcile_all():
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)
+                _record_run(est_id, name, target_date, "error", error=str(exc))
                 event_queue.put({"type": "r365_progress", "establishment_id": est_id,
                                  "status": "error", "error": str(exc)})
 
@@ -440,6 +479,20 @@ def r365_reconcile_all():
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _record_run(est_id, name, target_date, status, **kwargs) -> None:
+    """Log a reconciliation run to the DB. Never let a logging failure break the run."""
+    try:
+        db.record_run(
+            establishment_id=est_id,
+            establishment_name=name,
+            run_date=target_date,
+            status=status,
+            **kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("Failed to record run for est %s: %s", est_id, exc)
+
 
 def _extract_revel_values(data: dict) -> dict:
     """

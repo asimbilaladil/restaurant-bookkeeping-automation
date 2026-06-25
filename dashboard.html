@@ -232,6 +232,18 @@
       --tag-bg: var(--amber-lt);
       --tag-color: var(--amber);
     }
+    .card-loglink {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--sub);
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+    .card-loglink:hover { color: var(--indigo); text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -288,6 +300,11 @@
           Active
         </span>
         <span class="card-tag">Revel + R365</span>
+        <span class="card-loglink"
+              onclick="event.preventDefault();event.stopPropagation();location.href='/dss-runs';">
+          <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5zm3 2a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm0 3a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm0 3a1 1 0 011-1h3a1 1 0 110 2H7a1 1 0 01-1-1z" clip-rule="evenodd"/></svg>
+          Run history
+        </span>
       </div>
     </a>
 

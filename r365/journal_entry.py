@@ -275,41 +275,32 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
 
     filename = os.path.basename(attachment_path)
 
-    # The page has TWO #attachmentsModuleInput elements (duplicate IDs), both
-    # wrapped in <r365-amazon-uploader>:
-    #   1. ribbon-logo uploader (wrong target) — lives outside #KendoSplitter
-    #   2. DSS form attachments (what we want) — lives inside #KendoSplitter
-    #      and is inside <r365-amazon-uploader upload-type="attachment">
-    # Either scope works; use upload-type for primary, #KendoSplitter as fallback.
-    DSS_INPUT_SELECTOR = (
-        'r365-amazon-uploader[upload-type="attachment"] #attachmentsModuleInput, '
-        '#KendoSplitter #attachmentsModuleInput'
+    # The DSS form now contains TWO inputs sharing id="attachmentsModuleInput":
+    # the new "Upload Ribbon Logo" uploader (inside <r365-amazon-uploader>) and the
+    # real DSS attachments input (inside #KendoSplitter). document.getElementById and a
+    # bare '#attachmentsModuleInput' locator hit the wrong/ambiguous one. This JS
+    # expression always resolves the real DSS input, skipping the ribbon-logo uploader.
+    _INPUT_EXPR = (
+        "(document.querySelector('#KendoSplitter #attachmentsModuleInput')"
+        " || [...document.querySelectorAll('#attachmentsModuleInput')]"
+        ".filter(i => !i.closest('r365-amazon-uploader')).pop()"
+        " || document.getElementById('attachmentsModuleInput'))"
     )
 
     for frame in active.frames + [active]:
         try:
-            has_input = frame.evaluate("""
-                () => {
-                    const inputs = Array.from(document.querySelectorAll('#attachmentsModuleInput'));
-                    return inputs.some(i =>
-                        i.closest('r365-amazon-uploader[upload-type="attachment"]')
-                        || i.closest('#KendoSplitter')
-                    );
-                }
-            """)
+            has_input = frame.evaluate(f"() => !!{_INPUT_EXPR}")
             if not has_input:
                 continue
-            log.info("DSS attachments input found in frame: %s", getattr(frame, "url", ""))
+            log.info("Attachments input found in frame: %s", getattr(frame, "url", ""))
 
             already = frame.evaluate(f"""
                 () => {{
-                    const root = document.querySelector(
-                        'r365-amazon-uploader[upload-type="attachment"]'
-                    ) || document.querySelector('#KendoSplitter') || document.body;
                     if (window.AWS_S3_Uploader && Array.isArray(AWS_S3_Uploader.files)) {{
                         if (AWS_S3_Uploader.files.some(f =>
                             (f.name || f.fileName || '').includes({repr(filename)}))) return true;
                     }}
+                    const root = document.querySelector('#attachmentsModule, .col-md-12') || document.body;
                     return root.innerText.includes({repr(filename)});
                 }}
             """)
@@ -319,152 +310,124 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
                     _screenshot_attachments(frame, screenshot_path)
                 return "already_present"
 
-            # Drive the DSS-scoped hidden input directly.
-            file_input = frame.locator(DSS_INPUT_SELECTOR).first
-            file_input.set_input_files(attachment_path)
-            log.info("Files set on DSS #attachmentsModuleInput: %s", attachment_path)
-
-            # The r365-amazon-uploader directive uses an isolate scope.
-            # AWS_S3_Uploader and attachmentsModuleInputChangeHandler live there.
-            # Strategy:
-            #   1. Dispatch native change (so r365-custom-on-change directive fires)
-            #   2. If the scope exposes the handler, call it directly inside $apply
-            #      — this guarantees the upload pipeline starts even if directive
-            #      wiring missed the event.
-            fire_result = frame.evaluate("""
-                () => {
-                    const inputs = Array.from(document.querySelectorAll('#attachmentsModuleInput'));
-                    const inp = inputs.find(i =>
-                        i.closest('r365-amazon-uploader[upload-type="attachment"]')
-                        || i.closest('#KendoSplitter')
-                    );
-                    if (!inp) return {step: 'no-dss-input'};
-
-                    const result = {
-                        files_set: inp.files ? inp.files.length : 0,
-                        file_name: (inp.files && inp.files[0]) ? inp.files[0].name : null,
-                    };
-
-                    const evt = new Event('change', {bubbles: true, cancelable: true});
-                    inp.dispatchEvent(evt);
-                    result.change_dispatched = true;
-
-                    if (!window.angular) { result.angular = 'missing'; return result; }
-
-                    try {
-                        const $el = angular.element(inp);
-                        // For directives with isolate scope, .scope() returns the
-                        // inherited scope; .isolateScope() returns the directive's own.
-                        let scope = $el.scope() || $el.isolateScope();
-                        if (!scope) {
-                            // Walk up to the r365-amazon-uploader and grab its isolate scope
-                            const wrapper = inp.closest('r365-amazon-uploader');
-                            if (wrapper) scope = angular.element(wrapper).isolateScope()
-                                              || angular.element(wrapper).scope();
-                        }
-                        if (!scope) { result.scope = 'none'; return result; }
-
-                        result.has_AWS_S3 = !!scope.AWS_S3_Uploader;
-                        result.has_handler = typeof scope.attachmentsModuleInputChangeHandler === 'function';
-                        if (scope.AWS_S3_Uploader && Array.isArray(scope.AWS_S3_Uploader.files)) {
-                            result.aws_files_before = scope.AWS_S3_Uploader.files.length;
-                        }
-
-                        // Call the handler directly inside $apply if it exists
-                        if (typeof scope.attachmentsModuleInputChangeHandler === 'function') {
-                            const phase = scope.$root && scope.$root.$$phase;
-                            const run = () => scope.attachmentsModuleInputChangeHandler({target: inp, originalEvent: evt});
-                            if (phase) { run(); result.handler = 'called-in-digest'; }
-                            else { scope.$apply(run); result.handler = 'called+apply'; }
-                        }
-                        if (scope.AWS_S3_Uploader && Array.isArray(scope.AWS_S3_Uploader.files)) {
-                            result.aws_files_after = scope.AWS_S3_Uploader.files.length;
-                        }
-                    } catch (e) {
-                        result.angular_error = e.message;
-                    }
-                    return result;
-                }
+            # Resolve the DSS attachments input ONCE to a single element handle: the
+            # #attachmentsModuleInput that is NOT the ribbon-logo uploader (which lives
+            # inside <r365-amazon-uploader>). set_input_files, the change event and
+            # verification then all act on the SAME element — previously they diverged
+            # and the verified input had files==0 (see ATTACH DIAGNOSTIC).
+            input_handle = frame.evaluate_handle("""
+                () => document.querySelector('#KendoSplitter #attachmentsModuleInput')
+                    || [...document.querySelectorAll('#attachmentsModuleInput')]
+                        .filter(i => !i.closest('r365-amazon-uploader')).pop()
+                    || document.getElementById('attachmentsModuleInput')
             """)
-            log.info("Change/handler fired: %s", fire_result)
+            el = input_handle.as_element()
+            if el is None:
+                log.warning("DSS attachments input handle not resolvable in this frame")
+                continue
 
-            # Poll the uploader's Angular scope and the whole-page DOM.
-            # attachmentViewer.attachments renders the uploaded list elsewhere on
-            # the form, so DOM search must be page-wide, not uploader-scoped.
+            # set_input_files delivers the File to R365's change handler, but the handler
+            # never pushes it to scope.AWS_S3_Uploader (uploaderFiles stays [], status
+            # False) — the synthetic change event isn't trusted, so R365 drops it.
+            # Reproduce a real user gesture: click the input to open the native file
+            # chooser and let Playwright fulfil it, producing a TRUSTED change event the
+            # uploader accepts. Fall back to set_input_files if no chooser appears.
+            via_chooser = False
+            try:
+                with active.expect_file_chooser(timeout=5_000) as fc_info:
+                    frame.evaluate("(inp) => inp.click()", el)
+                fc_info.value.set_files(attachment_path)
+                via_chooser = True
+                log.info("Native file chooser fulfilled: %s", attachment_path)
+            except Exception as fc_err:
+                log.warning("File chooser path failed (%s) — falling back to set_input_files", fc_err)
+                el.set_input_files(attachment_path)
+
+            files_count = frame.evaluate("(inp) => inp && inp.files ? inp.files.length : -1", el)
+            log.info("Files set on DSS #attachmentsModuleInput: %s (input.files=%s, chooser=%s)",
+                     attachment_path, files_count, via_chooser)
+
+            # Flush Angular. When the native chooser fired a trusted change, R365's
+            # r365-custom-on-change directive already ran the handler — only $apply is
+            # needed. On the fallback path (no chooser) re-dispatch change and invoke
+            # attachmentsModuleInputChangeHandler explicitly.
+            fire_result = frame.evaluate("""
+                ([inp, viaChooser]) => {
+                    if (!inp) return 'no-input';
+                    if (!viaChooser) {
+                        const evt = new Event('change', {bubbles: true, cancelable: true});
+                        inp.dispatchEvent(evt);
+                    }
+                    if (window.angular) {
+                        try {
+                            const scope = angular.element(inp).scope();
+                            if (!viaChooser && scope && typeof scope.attachmentsModuleInputChangeHandler === 'function') {
+                                scope.attachmentsModuleInputChangeHandler({target: inp});
+                            }
+                            if (scope && scope.$apply) {
+                                if (scope.$root && scope.$root.$$phase) return 'change+handler+digest-in-progress';
+                                scope.$apply();
+                                return 'change+handler+apply';
+                            }
+                        } catch (e) { return 'change+apply-error: ' + e.message; }
+                    }
+                    return 'change-only';
+                }
+            """, [el, via_chooser])
+            log.info("Change fired: %s", fire_result)
+
+            # Poll for the file to land. R365 now tracks attachments on the Angular
+            # scope (scope.AWS_S3_Uploader.files / scope.uploadedAttachments), not a
+            # window global — check both, plus the DOM.
             for i in range(45):
                 frame.wait_for_timeout(1_000)
                 landed = frame.evaluate(f"""
-                    () => {{
-                        const filename = {repr(filename)};
-                        // Check uploader's Angular isolate scope
-                        if (window.angular) {{
-                            try {{
-                                const wrapper = document.querySelector(
-                                    'r365-amazon-uploader[upload-type="attachment"]'
-                                );
-                                if (wrapper) {{
-                                    const $el = angular.element(wrapper);
-                                    const scope = $el.isolateScope() || $el.scope();
-                                    if (scope && scope.AWS_S3_Uploader
-                                        && Array.isArray(scope.AWS_S3_Uploader.files)) {{
-                                        if (scope.AWS_S3_Uploader.files.some(f =>
-                                            (f.name || f.fileName || '').includes(filename))) return 'aws-files';
-                                    }}
-                                    // attachmentViewer.attachments (parent scope)
-                                    let s = scope;
-                                    for (let n = 0; n < 8 && s; n++, s = s.$parent) {{
-                                        if (s.attachmentViewer
-                                            && Array.isArray(s.attachmentViewer.attachments)
-                                            && s.attachmentViewer.attachments.some(a =>
-                                                (a.name || a.fileName || a.FileName || '').includes(filename))) {{
-                                            return 'attachment-viewer';
-                                        }}
-                                    }}
-                                }}
-                            }} catch (e) {{}}
+                    (inp) => {{
+                        const fn = {repr(filename)};
+                        let scope = null;
+                        try {{ scope = window.angular ? angular.element(inp).scope() : null; }} catch (e) {{}}
+                        if (scope) {{
+                            const up = scope.AWS_S3_Uploader;
+                            if (up && Array.isArray(up.files) && up.files.some(f =>
+                                (f.name || f.fileName || '').includes(fn))) return 'scope-aws-files';
+                            const ua = scope.uploadedAttachments;
+                            if (Array.isArray(ua) && ua.some(a =>
+                                JSON.stringify(a).includes(fn))) return 'scope-uploadedAttachments';
                         }}
-                        return document.body.innerText.includes(filename) ? 'dom' : null;
+                        const root = document.querySelector('#attachmentsModule, .col-md-12') || document.body;
+                        return root.innerText.includes(fn) ? 'dom' : null;
                     }}
-                """)
+                """, el)
                 if landed:
                     log.info("✅ Attachment confirmed (%s) after %ds: %s", landed, i + 1, filename)
                     if screenshot_path:
                         _screenshot_attachments(frame, screenshot_path)
                     return "uploaded"
 
-            log.warning("⚠️  Attachment '%s' did not land after 45s", filename)
+            log.warning("⚠️  Attachment '%s' not in scope uploader or DOM after 45s", filename)
+            # Dump the SCOPE uploader state for diagnosis (R365 moved it off window).
             try:
                 state = frame.evaluate("""
-                    () => {
-                        if (!window.angular) return 'no-angular';
-                        const wrapper = document.querySelector(
-                            'r365-amazon-uploader[upload-type="attachment"]'
-                        );
-                        if (!wrapper) return 'no-wrapper';
-                        const $el = angular.element(wrapper);
-                        const scope = $el.isolateScope() || $el.scope();
+                    (inp) => {
+                        let scope = null;
+                        try { scope = window.angular ? angular.element(inp).scope() : null; } catch (e) {}
                         if (!scope) return 'no-scope';
-                        const out = {};
-                        if (scope.AWS_S3_Uploader) {
-                            out.status = scope.AWS_S3_Uploader.status;
-                            out.files = (scope.AWS_S3_Uploader.files || [])
-                                .map(f => f.name || f.fileName || JSON.stringify(f));
-                        }
-                        let s = scope;
-                        for (let n = 0; n < 8 && s; n++, s = s.$parent) {
-                            if (s.attachmentViewer && Array.isArray(s.attachmentViewer.attachments)) {
-                                out.viewer_count = s.attachmentViewer.attachments.length;
-                                out.viewer_names = s.attachmentViewer.attachments.map(
-                                    a => a.name || a.fileName || a.FileName);
-                                break;
-                            }
-                        }
-                        return out;
+                        const up = scope.AWS_S3_Uploader;
+                        return {
+                            inputFiles: inp && inp.files ? inp.files.length : null,
+                            uploaderStatus: up ? up.status : 'no scope.AWS_S3_Uploader',
+                            uploaderFiles: up && Array.isArray(up.files)
+                                ? up.files.map(f => f.name || f.fileName || JSON.stringify(f)) : null,
+                            uploadedAttachments: Array.isArray(scope.uploadedAttachments)
+                                ? scope.uploadedAttachments.map(a => JSON.stringify(a).slice(0, 120)) : scope.uploadedAttachments,
+                            disableUploadButton: scope.disableUploadButton,
+                        };
                     }
-                """)
-                log.warning("Uploader scope state: %s", state)
+                """, el)
+                log.warning("Scope uploader state: %s", state)
             except Exception:
                 pass
+
             if screenshot_path:
                 _screenshot_attachments(frame, screenshot_path)
             return "failed"
@@ -477,23 +440,17 @@ def _upload_attachment(active, attachment_path: str, screenshot_path: str | None
 
 
 def _screenshot_attachments(frame, path: str) -> None:
-    """Screenshot the attachments module area for visual proof (DSS-scoped)."""
+    """Screenshot the attachments module area for visual proof."""
     try:
+        # The button + thumbnail row both live under the same col-md-12 wrapper
         loc = frame.locator(
-            'r365-amazon-uploader[upload-type="attachment"] .amazon-uploader-module'
+            '#attachmentsModule, .col-md-12:has(#attachmentsModuleInputButton)'
         ).first
-        if loc.count() == 0:
-            loc = frame.locator(
-                '#KendoSplitter .col-md-12:has(#attachmentsModuleInputButton)'
-            ).first
         if loc.count() > 0:
             loc.scroll_into_view_if_needed()
             loc.screenshot(path=path)
         else:
-            frame.locator(
-                'r365-amazon-uploader[upload-type="attachment"] #attachmentsModuleInputButton, '
-                '#KendoSplitter #attachmentsModuleInputButton'
-            ).first.screenshot(path=path)
+            frame.locator('#attachmentsModuleInputButton').first.screenshot(path=path)
         log.info("Attachments screenshot saved: %s", path)
     except Exception as e:
         log.warning("Could not screenshot attachments area: %s", e)
