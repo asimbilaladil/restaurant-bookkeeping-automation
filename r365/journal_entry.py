@@ -815,9 +815,15 @@ def fill_journal_entry(
     je_diff = _screenshot_je_grid(je_frame, screenshot_path)
     log.info("Journal Entry fields filled — screenshot saved: %s", screenshot_path)
 
-    # Upload Revel xlsx attachment before saving (so it persists with the JE)
+    # Whether the JE balances (debit == credit) — matches the downstream
+    # definition. Both the attachment upload and the Approve step are gated on
+    # this: an unbalanced entry gets neither the file nor approval.
+    je_balanced = round(je_diff or 0.0, 2) == 0.0
+
+    # Upload Revel xlsx attachment before saving (so it persists with the JE) —
+    # but only when balanced; an unbalanced entry should not get the file.
     attachment_status = "skipped"
-    if attachment_path:
+    if attachment_path and je_balanced:
         try:
             attachment_status = _upload_attachment(
                 active, attachment_path,
@@ -826,6 +832,8 @@ def fill_journal_entry(
         except Exception as e:
             log.warning("Attachment upload error: %s", e)
             attachment_status = "failed"
+    elif attachment_path and not je_balanced:
+        log.info("Skipping attachment upload — JE not balanced (diff=%.2f)", je_diff or 0.0)
 
     # Save the DSS form — Save toolbar is a <li data-testid="saveMenuItem">, not a <button>
     try:
@@ -858,7 +866,6 @@ def fill_journal_entry(
     # <li data-testid="approveMenuItem"> with an ng-click handler, same pattern
     # as saveMenuItem (clicking the <li> fires the handler without opening the
     # dropdown). "balanced" matches the downstream definition: round(diff,2)==0.
-    je_balanced = round(je_diff or 0.0, 2) == 0.0
     if je_balanced:
         try:
             # Clicking Approve fires a POST to ServiceStack/SaveTransaction. Wait
