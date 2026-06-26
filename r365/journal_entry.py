@@ -456,6 +456,193 @@ def _screenshot_attachments(frame, path: str) -> None:
         log.warning("Could not screenshot attachments area: %s", e)
 
 
+# ── Unmapped payment-type auto-assignment ────────────────────────────────────
+# When the DSS journal entry shows a '-' (unassigned) row, R365's "Payment Type
+# Account" window needs a GL Account and a Payment Group, then Save. The GL
+# account is the Comps account; the Payment Group is still pending confirmation
+# from accounting. While PAYMENT_TYPE_PAYMENT_GROUP is None the auto-assign is a
+# safe no-op — the entry just stays unbalanced (and unapproved), as before.
+PAYMENT_TYPE_GL_ACCOUNT = "4500-02 - Comps"
+PAYMENT_TYPE_PAYMENT_GROUP = None  # TODO: set once accounting confirms the group
+
+
+def _detect_unassigned_je_rows(je_frame) -> list[dict]:
+    """Return JE grid rows that have no account ('-') and a non-zero amount.
+
+    Such a row means a payment-type item (e.g. a coupon/comp) is not mapped to a
+    GL account, which unbalances the journal entry.
+    """
+    try:
+        return je_frame.evaluate(r"""
+            () => {
+                const out = [];
+                const grid = document.querySelector('#DSSJournalEntryGrid table[role="grid"]')
+                          || document.querySelector('table[role="grid"]');
+                if (!grid) return out;
+                grid.querySelectorAll('tbody tr[role="row"]').forEach(r => {
+                    const tds = r.querySelectorAll('td');
+                    if (tds.length < 4) return;
+                    const clone = tds[1].cloneNode(true);
+                    clone.querySelectorAll('select').forEach(s => s.remove());
+                    const acct = clone.textContent.trim();
+                    const num = (s) => parseFloat((s || '').replace(/[^0-9.\-]/g, '')) || 0;
+                    const debit = num(tds[2].textContent);
+                    const credit = num(tds[3].textContent);
+                    const comment = tds.length > 4 ? tds[4].textContent.trim() : '';
+                    if ((acct === '-' || acct === '') && (debit || credit)) {
+                        out.push({comment, debit, credit});
+                    }
+                });
+                return out;
+            }
+        """) or []
+    except Exception as e:
+        log.warning("Detect unassigned JE rows failed: %s", e)
+        return []
+
+
+def _assign_missing_payment_types(active, je_frame) -> list[str]:
+    """If the JE has unassigned ('-') rows, open the ASSIGN PAYMENT TYPE tab,
+    tick every unassigned item and click Update. R365 remembers the account
+    mapping, so Update reassigns the item without needing to pick an account.
+    Returns the list of item names that were assigned (empty if nothing to do).
+    """
+    missing = _detect_unassigned_je_rows(je_frame)
+    if not missing:
+        return []
+    names = [m.get("comment", "") for m in missing]
+    log.info("Found %d unassigned payment-type item(s): %s", len(missing), names)
+
+    if not PAYMENT_TYPE_PAYMENT_GROUP:
+        log.warning(
+            "Unassigned payment-type item(s) %s found, but PAYMENT_TYPE_PAYMENT_GROUP "
+            "is not configured yet (pending accountant) — skipping auto-assign.", names)
+        return []
+
+    # The tab strip + assign grid live in the form iframe — find the frame that
+    # actually has the ASSIGN PAYMENT TYPE tab.
+    target = None
+    for f in list(active.frames) + [active]:
+        try:
+            if f.locator('li[role="tab"] span.k-link', has_text="ASSIGN PAYMENT TYPE").count() > 0:
+                target = f
+                break
+        except Exception:
+            continue
+    if target is None:
+        log.warning("ASSIGN PAYMENT TYPE tab not found — cannot auto-assign")
+        return []
+
+    tab = target.locator('li[role="tab"] span.k-link', has_text="ASSIGN PAYMENT TYPE").first
+    try:
+        tab.scroll_into_view_if_needed()
+        tab.click()
+    except Exception as e:
+        log.warning("Clicking ASSIGN PAYMENT TYPE tab failed: %s", e)
+        return []
+    target.wait_for_timeout(2_000)
+    try:
+        active.screenshot(path="/tmp/r365_assign_tab.png")
+    except Exception:
+        pass
+
+    # Tick every unassigned row's checkbox.
+    boxes = target.evaluate("""
+        () => {
+            const boxes = Array.from(document.querySelectorAll('input.checkbox.select-row'));
+            let n = 0;
+            boxes.forEach(b => { if (!b.checked) { b.click(); n++; } });
+            return {total: boxes.length, clicked: n};
+        }
+    """)
+    log.info("Assign grid checkboxes: %s", boxes)
+    target.wait_for_timeout(1_000)
+
+    # Click the toolbar Update button — opens the "Payment Type Account" window.
+    upd = target.evaluate("""
+        () => {
+            const btn = Array.from(document.querySelectorAll('button')).find(b =>
+                /openUpdatePaymentTypeAccounteWindow/.test(b.getAttribute('ng-click') || '') ||
+                b.textContent.trim() === 'Update');
+            if (!btn) return 'update-not-found';
+            btn.click();
+            return 'update-clicked';
+        }
+    """)
+    log.info("Assign Update click: %s", upd)
+    active.wait_for_timeout(2_500)
+    try:
+        active.screenshot(path="/tmp/r365_assign_window.png")
+    except Exception:
+        pass
+
+    # Fill the window: GL Account + Payment Group (both Kendo comboboxes — type
+    # the value then press Enter to select the match), then click Save.
+    def _set_combo(input_name, value):
+        try:
+            inp = target.locator(f'input[name="{input_name}"]').first
+            inp.click(timeout=5_000)
+            inp.fill("")
+            inp.type(value, delay=40)
+            target.wait_for_timeout(1_200)
+            target.keyboard.press("Enter")
+            target.wait_for_timeout(600)
+            return True
+        except Exception as e:
+            log.warning("Set combo %s=%r failed: %s", input_name, value, e)
+            return False
+
+    _set_combo("PaymentTypeAccountGLAccount_input", PAYMENT_TYPE_GL_ACCOUNT)
+    _set_combo("PaymentTypeAccountPaymentGroup_input", PAYMENT_TYPE_PAYMENT_GROUP)
+
+    saved = target.evaluate("""
+        () => {
+            const btn = document.querySelector('button[ng-click*="windowMethods.save()"]')
+                || Array.from(document.querySelectorAll('.k-window button'))
+                    .find(b => b.textContent.trim() === 'Save');
+            if (!btn) return 'save-not-found';
+            btn.click();
+            return 'save-clicked';
+        }
+    """)
+    log.info("Assign window Save: %s", saved)
+    active.wait_for_timeout(3_000)
+    try:
+        active.screenshot(path="/tmp/r365_assign_done.png")
+    except Exception:
+        pass
+    return names
+
+
+def _recreate_journal_entry(active) -> None:
+    """Force R365 to regenerate the JE (Action → Recreate Journal Entry) so it
+    picks up a freshly-assigned payment-type mapping. Confirms any dialog."""
+    res = active.evaluate("""
+        () => {
+            const el = document.querySelector('[data-testid="recreateJournalEntryMenuItem"]');
+            if (!el) return 'recreate-not-found';
+            el.click();
+            return 'recreate-clicked';
+        }
+    """)
+    log.info("Recreate JE: %s", res)
+    active.wait_for_timeout(2_000)
+    active.evaluate("""
+        () => {
+            const wins = Array.from(document.querySelectorAll('.k-window, .modal, [role="dialog"]'))
+                .filter(w => w.offsetParent !== null);
+            const win = wins[wins.length - 1];
+            if (!win) return 'no-confirm';
+            const want = ['yes', 'ok', 'recreate', 'confirm', 'continue'];
+            const btn = Array.from(win.querySelectorAll('button'))
+                .find(b => want.includes(b.textContent.trim().toLowerCase()));
+            if (btn) { btn.click(); return 'confirmed'; }
+            return 'no-btn';
+        }
+    """)
+    active.wait_for_timeout(4_000)
+
+
 def fill_journal_entry(
     active,
     revel_values: dict,
@@ -510,6 +697,44 @@ def fill_journal_entry(
         log.info("JE grid rows detected")
     except Exception as e:
         log.warning("JE grid rows not detected within 15s: %s", e)
+
+    # ── Auto-assign unassigned payment-type items (rows showing '-') ──────────
+    # A '-' account row is an unmapped item (e.g. a coupon/comp) that unbalances
+    # the JE. R365 remembers the mapping, so ticking it + Update reassigns it.
+    # Done before filling so the recreated JE is mapped and can balance — this
+    # makes both the cron run and the manual rerun self-heal.
+    try:
+        assigned = _assign_missing_payment_types(active, je_frame)
+    except Exception as e:
+        assigned = []
+        log.warning("Payment-type auto-assign step failed: %s", e)
+    if assigned:
+        log.info("Auto-assigned %d payment type(s): %s — recreating JE", len(assigned), assigned)
+        _recreate_journal_entry(active)
+        # Switch back to the Journal Entry tab (we navigated to ASSIGN PAYMENT TYPE).
+        for f in list(active.frames) + [active]:
+            try:
+                je_tab = f.locator('li[role="tab"] span.k-link', has_text="Journal Entry").first
+                if je_tab.count() > 0:
+                    je_tab.scroll_into_view_if_needed()
+                    je_tab.click()
+                    active.wait_for_timeout(4_000)
+                    break
+            except Exception:
+                continue
+        # Re-find the refreshed JE grid frame and re-open its rows.
+        for f in active.frames:
+            try:
+                if f.locator('td:has-text("Food Delivery Sales")').count() > 0:
+                    je_frame = f
+                    break
+            except Exception:
+                continue
+        try:
+            je_frame.locator('tr[role="row"]').first.wait_for(state="attached", timeout=15_000)
+            log.info("JE grid re-detected after recreate")
+        except Exception as e:
+            log.warning("JE grid not re-detected after recreate: %s", e)
 
     # ── Read all current R365 values first, then verify and write if different ──
     def _reconcile(account, field, revel_val):
