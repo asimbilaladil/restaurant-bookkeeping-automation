@@ -588,6 +588,20 @@
   </div>
 </div>
 
+<!-- ─── Side panel (receivable account selector) ─── -->
+<div class="panel-overlay" id="accountOverlay" onclick="accountOverlayClick(event)">
+  <div class="side-panel">
+    <div class="panel-header">
+      <h3>Select Receivable Account</h3>
+      <button class="panel-close" onclick="closeAccountPanel()">✕</button>
+    </div>
+    <div class="panel-search-wrap">
+      <input type="text" class="panel-search" id="accountSearch" placeholder="Search accounts…" />
+    </div>
+    <div class="panel-list" id="accountList"></div>
+  </div>
+</div>
+
 <!-- ─── Main ─── -->
 <div class="container">
 
@@ -611,6 +625,17 @@
             <circle cx="10" cy="7" r="2"/>
           </svg>
           <span id="cfgEntity" style="color:var(--text);font-weight:600;font-size:0.875rem;">LCF Airtex LLC</span>
+          <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" style="margin-left:auto;opacity:0.4;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        </button>
+      </div>
+      <div class="field" style="flex:1;">
+        <label>Receivable Account</label>
+        <button class="btn btn-outline" id="btnAccount" onclick="openAccountPanel()" style="width:100%;justify-content:flex-start;">
+          <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="5" width="14" height="11" rx="2"/>
+            <path stroke-linecap="round" d="M3 8h14"/>
+          </svg>
+          <span id="cfgAccount" style="color:var(--text);font-weight:600;font-size:0.875rem;">UberEats</span>
           <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" style="margin-left:auto;opacity:0.4;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
         </button>
       </div>
@@ -781,9 +806,60 @@
   function closeEntityPanel() { document.getElementById("entityOverlay").classList.remove("open"); document.body.style.overflow = ""; }
   function overlayClick(e)    { if (e.target === document.getElementById("entityOverlay")) closeEntityPanel(); }
 
+  // ─── Receivable account selector ─────────────────────────────────────────────
+  const ACCOUNTS = [
+    { name: "UberEats",             account: "1245-12 - A/R-UberEats" },
+    { name: "DoorDash",             account: "1245-03 - A/R-DoorDash" },
+    { name: "Grubhub",              account: "1245-08 - A/R-GrubHub" },
+    { name: "EzCatering",           account: "1245-04 - A/R-EzCater" },
+    { name: "Lunchdrop",            account: "1245-09 - A/R-Lunchdrop" },
+    { name: "Fooda",                account: "1245-06 - A/R-Fooda" },
+    { name: "Event",                account: "1200-002 - A/R Event Receivable" },
+    { name: "Credit Card Clearing", account: "1200-000 - A/R Credit Cards Receivable" },
+    { name: "Undeposited Fund",     account: "1255 - Undeposited Funds" },
+    { name: "Square",               account: "1245-11 - A/R-Square" },
+  ];
+  let selectedAccount = ACCOUNTS[0];
+
+  function updateAccountButtonDisplay() {
+    document.getElementById("cfgAccount").textContent = selectedAccount.name;
+  }
+
+  function renderAccountList(filter = "") {
+    const list = document.getElementById("accountList");
+    const q = filter.trim().toLowerCase();
+    list.innerHTML = "";
+    ACCOUNTS
+      .filter(a => !q || a.name.toLowerCase().includes(q) || a.account.toLowerCase().includes(q))
+      .forEach(a => {
+        const id = "acct-" + a.account.replace(/[^a-z0-9]+/gi, "-");
+        const isSelected = selectedAccount.account === a.account;
+        const row = document.createElement("label");
+        row.className = "panel-item" + (isSelected ? " selected" : "");
+        row.htmlFor = id;
+        row.innerHTML = `
+          <input type="radio" name="receivableAccount" id="${id}" ${isSelected ? "checked" : ""}/>
+          <span class="panel-item-name">${a.name}</span>
+          <span style="font-size:0.72rem;color:var(--muted);font-weight:500;">${a.account.split(" - ")[0]}</span>`;
+        row.querySelector("input").addEventListener("change", () => {
+          selectedAccount = a;
+          updateAccountButtonDisplay();
+          closeAccountPanel();
+        });
+        list.appendChild(row);
+      });
+  }
+
+  function openAccountPanel()  { renderAccountList(); document.getElementById("accountOverlay").classList.add("open"); document.body.style.overflow = "hidden"; }
+  function closeAccountPanel() { document.getElementById("accountOverlay").classList.remove("open"); document.body.style.overflow = ""; }
+  function accountOverlayClick(e) { if (e.target === document.getElementById("accountOverlay")) closeAccountPanel(); }
+
   document.addEventListener("DOMContentLoaded", () => {
     renderEntityList();
     document.getElementById("entitySearch").addEventListener("input", e => renderEntityList(e.target.value));
+    updateAccountButtonDisplay();
+    renderAccountList();
+    document.getElementById("accountSearch").addEventListener("input", e => renderAccountList(e.target.value));
   });
 </script>
 <script>
@@ -824,6 +900,7 @@
           end_date:   document.getElementById('r365EndDate').value   || null,
           show_unapproved: r365ShowUnapproved,
           calendar:        r365Calendar,
+          receivable_account: selectedAccount.account,
         }),
       });
 

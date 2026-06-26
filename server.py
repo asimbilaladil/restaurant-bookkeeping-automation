@@ -342,6 +342,7 @@ def r365_report_viewer():
 
     show_unapproved = (body.get("show_unapproved") or "Yes").strip()
     calendar = (body.get("calendar") or "Fiscal").strip()
+    receivable_account = (body.get("receivable_account") or "").strip()
 
     start_date = None
     end_date = None
@@ -357,8 +358,8 @@ def r365_report_viewer():
         pass
 
     log.info(
-        "Report Viewer: entities=%r start=%s end=%s unapproved=%r calendar=%r",
-        legal_entities, start_date, end_date, show_unapproved, calendar,
+        "Report Viewer: entities=%r start=%s end=%s unapproved=%r calendar=%r account=%r",
+        legal_entities, start_date, end_date, show_unapproved, calendar, receivable_account,
     )
 
     ev_queue: queue.Queue = queue.Queue()
@@ -373,6 +374,7 @@ def r365_report_viewer():
         try:
             result = open_report_viewer(
                 legal_entities, start_date, end_date, show_unapproved, calendar,
+                account=receivable_account,
                 progress_cb=_progress,
                 entity_cb=_entity_done,
             )

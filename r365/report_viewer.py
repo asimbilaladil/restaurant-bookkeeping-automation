@@ -1,8 +1,11 @@
 """
 Navigate R365: My Reports → Accounting tab → GL Account Detail Export Customize
-→ set Account to 1245-12 A/R-UberEats.
+→ set Account to the selected receivable account (default 1245-12 A/R-UberEats;
+caller picks one of UberEats / DoorDash / GrubHub / EzCater / Lunchdrop / Fooda /
+Event / Credit Cards / Undeposited Funds / Square).
 """
 
+import json
 import logging
 import time
 import uuid
@@ -251,12 +254,16 @@ def _select_legal_entity(ctx, page, entity: str) -> None:
     page.wait_for_timeout(2_000)
 
 
+DEFAULT_ACCOUNT = "1245-12 - A/R-UberEats"
+
+
 def open_report_viewer(
     legal_entities: list = None,
     start_date: date_type | None = None,
     end_date: date_type | None = None,
     show_unapproved: str = "Yes",
     calendar: str = "Fiscal",
+    account: str | None = None,
     progress_cb=None,
     entity_cb=None,
 ) -> dict:
@@ -265,6 +272,9 @@ def open_report_viewer(
         legal_entities = [legal_entities]
     if not legal_entities:
         legal_entities = ["LCF Airtex LLC"]
+
+    # Receivable account to select in the picker (default: UberEats)
+    account = (account or "").strip() or DEFAULT_ACCOUNT
 
     def _emit(message: str, screenshot: str = ""):
         log.info("[rv] %s", message)
@@ -596,8 +606,8 @@ def open_report_viewer(
                 log.info("Select All click %d: %s", i, res)
                 page.wait_for_timeout(1_000)
 
-            # ── Step 9: type "1245-12 - A/R-UberEats" in the search input ─────
-            SEARCH_TERM = "1245-12 - A/R-UberEats"
+            # ── Step 9: type the receivable account into the search input ────
+            SEARCH_TERM = account
             log.info("Finding search input")
             try:
                 if ctx != page:
@@ -616,59 +626,63 @@ def open_report_viewer(
             # Pre-select screenshot
             pre = _snap(page, "pre_select")
             log.info("Pre-select screenshot: %s", pre)
-            _emit("Searching for account 1245-12 A/R-UberEats…", pre)
+            _emit(f"Searching for account {account}…", pre)
 
-            # ── Step 10: check the "1245-12 - A/R-UberEats" checkbox ─────────
+            # ── Step 10: check the account's checkbox ────────────────────────
             # The dialog is AngularJS Material inside the iframe (ctx). Each
-            # row has a wrapper <button aria-label="1245-12 - A/R-UberEats"
+            # row has a wrapper <button aria-label="<account>"
             # ng-click="wantedItem(item[0], true)"> that is the canonical way
             # to toggle selection — clicking it calls the AngularJS handler
-            # which sets `wanted=true` and triggers a digest cycle.
-            log.info("Selecting '1245-12 - A/R-UberEats' via AngularJS wantedItem()")
+            # which sets `wanted=true` and triggers a digest cycle. The
+            # md-checkbox fallback handles aria-labels rendered with a trailing
+            # space.
+            log.info("Selecting '%s' via AngularJS wantedItem()", account)
 
-            click_result = ctx.evaluate("""
-                () => {
+            click_result = ctx.evaluate(f"""
+                () => {{
+                    const acct = {json.dumps(account)};
                     // Prefer the wrapper button (canonical AngularJS handler)
                     const btn = document.querySelector(
-                        'button[aria-label="1245-12 - A/R-UberEats"]'
+                        'button[aria-label="' + acct + '"]'
                     );
-                    if (btn) {
-                        btn.scrollIntoView({block:'center'});
+                    if (btn) {{
+                        btn.scrollIntoView({{block:'center'}});
                         btn.click();
                         return 'wrapper-button-clicked';
-                    }
+                    }}
                     // Fallback: click the md-checkbox directly (note trailing space in aria-label)
                     const cb = document.querySelector(
-                        'md-checkbox[aria-label="1245-12 - A/R-UberEats "], ' +
-                        'md-checkbox[aria-label="1245-12 - A/R-UberEats"]'
+                        'md-checkbox[aria-label="' + acct + ' "], ' +
+                        'md-checkbox[aria-label="' + acct + '"]'
                     );
-                    if (cb) {
-                        cb.scrollIntoView({block:'center'});
+                    if (cb) {{
+                        cb.scrollIntoView({{block:'center'}});
                         cb.click();
                         return 'md-checkbox-clicked aria-checked=' + cb.getAttribute('aria-checked');
-                    }
+                    }}
                     return 'no-target-found';
-                }
+                }}
             """)
             log.info("Checkbox click: %s", click_result)
             page.wait_for_timeout(1_500)
 
             # Verify the checkbox is actually checked now
-            verify = ctx.evaluate("""
-                () => {
+            verify = ctx.evaluate(f"""
+                () => {{
+                    const acct = {json.dumps(account)};
                     const cb = document.querySelector(
-                        'md-checkbox[aria-label="1245-12 - A/R-UberEats "], ' +
-                        'md-checkbox[aria-label="1245-12 - A/R-UberEats"]'
+                        'md-checkbox[aria-label="' + acct + ' "], ' +
+                        'md-checkbox[aria-label="' + acct + '"]'
                     );
                     return cb ? cb.getAttribute('aria-checked') : 'not-found';
-                }
+                }}
             """)
             log.info("Checkbox aria-checked after click: %s", verify)
 
             # Screenshot after checking — should show checkbox ticked
             check_shot = _snap(page, "checked")
             log.info("After-check screenshot: %s", check_shot)
-            _emit("Account 1245-12 A/R-UberEats selected", check_shot)
+            _emit(f"Account {account} selected", check_shot)
 
             # ── Step 11: click OK to confirm selection ───────────────────────
             # Use the exact ng-click selector — there are two buttons with

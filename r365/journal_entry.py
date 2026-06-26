@@ -853,6 +853,43 @@ def fill_journal_entry(
     except Exception as e:
         log.warning("Save failed: %s", e)
 
+    # Approve the DSS form — but ONLY when the JE balances (debit == credit).
+    # An unbalanced entry must not be approved. The Approve toolbar item is a
+    # <li data-testid="approveMenuItem"> with an ng-click handler, same pattern
+    # as saveMenuItem (clicking the <li> fires the handler without opening the
+    # dropdown). "balanced" matches the downstream definition: round(diff,2)==0.
+    je_balanced = round(je_diff or 0.0, 2) == 0.0
+    if je_balanced:
+        try:
+            # Clicking Approve fires a POST to ServiceStack/SaveTransaction. Wait
+            # for that response instead of a fixed sleep — once it returns OK the
+            # approval has landed and we're good to move on to the next entity.
+            with active.expect_response(
+                lambda r: "ServiceStack/SaveTransaction" in r.url
+                          and r.request.method == "POST",
+                timeout=20_000,
+            ) as resp_info:
+                approved = active.evaluate("""
+                    () => {
+                        const el = document.querySelector('[data-testid="approveMenuItem"]');
+                        if (!el) return 'approveMenuItem not found';
+                        el.click();
+                        return 'clicked';
+                    }
+                """)
+                log.info("Approve JS click result: %s", approved)
+            resp = resp_info.value
+            if resp.ok:
+                log.info("DSS form approved — SaveTransaction HTTP %s (JE balanced, diff=%.2f)",
+                         resp.status, je_diff or 0.0)
+            else:
+                log.warning("Approve SaveTransaction returned HTTP %s — approval may have failed",
+                            resp.status)
+        except Exception as e:
+            log.warning("Approve failed (no SaveTransaction success): %s", e)
+    else:
+        log.info("Skipping Approve — JE not balanced (diff=%.2f)", je_diff or 0.0)
+
     return je_diff, attachment_status
 
 
