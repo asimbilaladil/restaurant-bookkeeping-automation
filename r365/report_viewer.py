@@ -118,53 +118,157 @@ def _snap(page, prefix: str) -> str:
     return name
 
 
-def _select_legal_entity(ctx, page, entity: str) -> None:
-    """Open Legal Entity filter dialog, clear existing selections, select entity, confirm OK."""
+def _select_entity_via_autocomplete(viewer_page, entity: str) -> None:
+    """Change the Legal Entity filter on the ReportViewer customize panel.
 
-    # ── Step 12: open Legal Entity filter on Customize panel ─────────
-    # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
-    # → "Legal Entity" option (the option uses ng-click=wantedItem
-    # without the `true` flag, so it's a single-select).
-    log.info("Opening Legal Entity filter")
-    fbtn = ctx.evaluate("""
+    The ReportViewer uses an md-autocomplete (not a modal dialog) for the
+    Filter parameter. We click the autocomplete input, clear it, type the
+    entity name, wait for the dropdown, then click the matching option.
+    """
+    log.info("Selecting entity %r via autocomplete", entity)
+
+    # Click the Filter autocomplete input — the label "Filter" (not "Filter By")
+    # lives in a div[style*="min-width"] left-side label column.
+    click_result = viewer_page.evaluate("""
         () => {
-            const btns = Array.from(document.querySelectorAll('button'))
-                .filter(b => b.offsetParent !== null);
-            let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
-            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
-            target = btns.find(b => {
-                const t = b.textContent.trim().toUpperCase();
-                return t === 'FILTER BY' || t.startsWith('FILTER BY');
-            });
-            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
-            return 'not-found';
+            // Find the Filter label (not Filter By) to locate the right row
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterLabel = spans.find(s =>
+                s.textContent.trim() === 'Filter' &&
+                s.closest('div[style*="min-width"]')
+            );
+            if (!filterLabel) return 'label-not-found';
+            let node = filterLabel;
+            for (let i = 0; i < 10; i++) {
+                node = node.parentElement;
+                if (!node) break;
+                if (node.tagName === 'SECTION') {
+                    const inp = node.querySelector('input[type="search"]');
+                    if (inp) {
+                        inp.click();
+                        inp.select();
+                        return 'input-clicked:' + inp.id;
+                    }
+                }
+            }
+            return 'input-not-found';
         }
     """)
-    log.info("Filter button: %s", fbtn)
-    page.wait_for_timeout(2_000)
+    log.info("Filter autocomplete click: %s", click_result)
+    viewer_page.wait_for_timeout(500)
 
-    if fbtn == "filter-by-clicked":
-        log.info("Clicking 'Legal Entity' option")
-        le = ctx.evaluate("""
+    # Clear the current value and type the new entity
+    try:
+        inp = viewer_page.locator('input[type="search"]').nth(3)  # input-4 = 4th search input
+        inp.click(timeout=3_000)
+        inp.select_text()
+        inp.fill("")
+        inp.type(entity, delay=60)
+        log.info("Typed %r into filter autocomplete", entity)
+    except Exception as e:
+        log.warning("Autocomplete locator failed (%s) — keyboard fallback", e)
+        viewer_page.keyboard.select_all()
+        viewer_page.keyboard.type(entity, delay=60)
+    viewer_page.wait_for_timeout(2_000)
+
+    # Click the matching item in the autocomplete dropdown
+    select_result = viewer_page.evaluate(f"""
+        () => {{
+            const label = {repr(entity)};
+            // md-autocomplete dropdown items
+            const candidates = [
+                ...document.querySelectorAll('li[md-autocomplete-list-item], md-autocomplete-parent-scope li'),
+                ...document.querySelectorAll('ul[role="presentation"] li'),
+            ];
+            const match = candidates.find(li => li.textContent.trim().includes(label));
+            if (match) {{ match.click(); return 'dropdown-item-clicked: ' + match.textContent.trim().slice(0,50); }}
+            // Broader fallback: any visible li containing the entity text
+            const anyLi = Array.from(document.querySelectorAll('li')).find(li =>
+                li.offsetParent !== null && li.textContent.trim().includes(label)
+            );
+            if (anyLi) {{ anyLi.click(); return 'li-fallback: ' + anyLi.textContent.trim().slice(0,50); }}
+            return 'not-found';
+        }}
+    """)
+    log.info("Entity autocomplete select (%s): %s", entity, select_result)
+    viewer_page.wait_for_timeout(1_500)
+
+    # Verify the filter input now shows the selected entity
+    verify = viewer_page.evaluate(f"""
+        () => {{
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterLabel = spans.find(s =>
+                s.textContent.trim() === 'Filter' &&
+                s.closest('div[style*="min-width"]')
+            );
+            if (!filterLabel) return 'label-not-found';
+            let node = filterLabel;
+            for (let i = 0; i < 10; i++) {{
+                node = node.parentElement;
+                if (!node) break;
+                if (node.tagName === 'SECTION') {{
+                    const inp = node.querySelector('input[type="search"]');
+                    return inp ? 'filter-value: ' + inp.value : 'input-not-found';
+                }}
+            }}
+            return 'section-not-found';
+        }}
+    """)
+    log.info("Filter value after select: %s", verify)
+
+
+def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False) -> None:
+    """Open Legal Entity filter dialog, clear existing selections, select entity, confirm OK.
+
+    skip_filter_type: set True when Filter By is already set to 'Legal Entity'
+    (e.g. subsequent entities on the ReportViewer page) so we don't re-click
+    FILTER BY, which would reset the current filter value to empty.
+    """
+
+    if not skip_filter_type:
+        # ── Step 12: open Legal Entity filter on Customize panel ─────────
+        # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
+        log.info("Opening Legal Entity filter")
+        fbtn = ctx.evaluate("""
             () => {
-                const btn = document.querySelector('button[aria-label="Legal Entity"]');
-                if (!btn) return 'not-found';
-                btn.scrollIntoView({block:'center'});
-                btn.click();
-                return 'legal-entity-clicked';
+                const btns = Array.from(document.querySelectorAll('button'))
+                    .filter(b => b.offsetParent !== null);
+                let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
+                if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
+                target = btns.find(b => {
+                    const t = b.textContent.trim().toUpperCase();
+                    return t === 'FILTER BY' || t.startsWith('FILTER BY');
+                });
+                if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
+                return 'not-found';
             }
         """)
-        log.info("Legal Entity option: %s", le)
-        page.wait_for_timeout(2_500)
+        log.info("Filter button: %s", fbtn)
+        page.wait_for_timeout(2_000)
+
+        if fbtn == "filter-by-clicked":
+            log.info("Clicking 'Legal Entity' option")
+            le = ctx.evaluate("""
+                () => {
+                    const btn = document.querySelector('button[aria-label="Legal Entity"]');
+                    if (!btn) return 'not-found';
+                    btn.scrollIntoView({block:'center'});
+                    btn.click();
+                    return 'legal-entity-clicked';
+                }
+            """)
+            log.info("Legal Entity option: %s", le)
+            page.wait_for_timeout(2_500)
+    else:
+        log.info("Skipping Filter By step (already set to Legal Entity on viewer page)")
 
     # ── Step 12c: open the FILTER multi-select dialog ─────────────────
-    # Filter By only SETS the filter type; the actual entity selection
-    # lives behind a separate "Filter" dropdown (id="Filter" on the
-    # Customize panel). We must click it to open the entity dialog.
+    # On MyReports panel the row has id="Filter"; on the ReportViewer
+    # panel it doesn't — fall back to finding the "Filter" label span.
     log.info("Opening Filter (entity multi-select) dialog")
     open_filter = ctx.evaluate("""
         () => {
-            // Click the button inside the Filter parameter row
+            // Try by id first (works on MyReports customize panel)
             const filterRow = document.getElementById('Filter');
             if (filterRow) {
                 const btn = filterRow.querySelector('button');
@@ -173,9 +277,26 @@ def _select_legal_entity(ctx, page, entity: str) -> None:
                     btn.click();
                     return 'filter-button-clicked';
                 }
-                // Section fallback (parameterMenuClick)
                 const section = filterRow.querySelector('section[role="button"]');
                 if (section) { section.click(); return 'filter-section-clicked'; }
+            }
+            // Fallback: find span.spanTop with text "Filter" (not "Filter By")
+            // and click its ancestor section[role="button"] — works on ReportViewer.
+            const labelSpans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterSpan = labelSpans.find(
+                s => s.textContent.trim() === 'Filter'
+            );
+            if (filterSpan) {
+                let node = filterSpan;
+                for (let i = 0; i < 10; i++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    if (node.tagName === 'SECTION' && node.getAttribute('role') === 'button') {
+                        node.scrollIntoView({block:'center'});
+                        node.click();
+                        return 'filter-span-section-clicked';
+                    }
+                }
             }
             return 'filter-not-found';
         }
@@ -864,7 +985,7 @@ def open_report_viewer(
                     except Exception:
                         pass
                     try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
                     except Exception:
                         pass
 
@@ -904,8 +1025,9 @@ def open_report_viewer(
 
                     viewer_page.wait_for_timeout(2_000)
 
-                    # On viewer_page, ctx IS viewer_page
-                    _select_legal_entity(viewer_page, viewer_page, entity)
+                    # On viewer_page the Filter parameter is an md-autocomplete,
+                    # not a modal dialog — use the autocomplete selection path.
+                    _select_entity_via_autocomplete(viewer_page, entity)
                     _emit(f"Legal entity '{entity}' selected", _snap(viewer_page, "entity_ok"))
 
                     # Click Run on viewer_page
@@ -925,7 +1047,7 @@ def open_report_viewer(
 
                     viewer_page.wait_for_timeout(3_000)
                     try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
                     except Exception:
                         pass
 
@@ -974,51 +1096,71 @@ def open_report_viewer(
                     _emit("Save dropdown opened — clicking Excel…",
                           _snap(viewer_page, "save_opened"))
 
+                    EXCEL_SEARCH_JS = """
+                        () => {
+                            const els = Array.from(document.querySelectorAll(
+                                'a, li, td, div[role="menuitem"], ' +
+                                'li[role="menuitem"], span, input[type="button"]'
+                            ));
+                            const excelEl = els.find(e => {
+                                const t = e.textContent.trim().toLowerCase();
+                                return t.includes('excel') && t.length < 60;
+                            });
+                            if (excelEl) {
+                                excelEl.scrollIntoView({block:'center'});
+                                excelEl.click();
+                                return 'clicked:' + excelEl.textContent.trim();
+                            }
+                            const visible = els
+                                .filter(e => e.offsetParent !== null
+                                          && e.textContent.trim().length < 60)
+                                .map(e => e.textContent.trim())
+                                .filter((v, i, a) => v && a.indexOf(v) === i)
+                                .slice(0, 40);
+                            return 'not-found|' + visible.join(';');
+                        }
+                    """
+
                     excel_clicked_in = None
-                    deadline = time.time() + 20
-                    while time.time() < deadline and excel_clicked_in is None:
-                        for label, c in _contexts(viewer_page):
-                            try:
-                                result = c.evaluate("""
-                                    () => {
-                                        // Match any element whose text contains "excel"
-                                        // (case-insensitive) — covers "Excel", "Microsoft Excel",
-                                        // "Excel (.xlsx)", "Excel 2007-2013 (.xlsx)", etc.
-                                        const els = Array.from(document.querySelectorAll(
-                                            'a, li, td, div[role="menuitem"], ' +
-                                            'li[role="menuitem"], span, input[type="button"]'
-                                        ));
-                                        const excelEl = els.find(e => {
-                                            const t = e.textContent.trim().toLowerCase();
-                                            return t.includes('excel') && t.length < 60;
-                                        });
-                                        if (excelEl) {
-                                            excelEl.scrollIntoView({block:'center'});
-                                            excelEl.click();
-                                            return 'clicked:' + excelEl.textContent.trim();
-                                        }
-                                        // Log ALL visible short-text elements so we can
-                                        // diagnose what the dropdown actually contains.
-                                        const visible = els
-                                            .filter(e => e.offsetParent !== null
-                                                      && e.textContent.trim().length < 60)
-                                            .map(e => e.textContent.trim())
-                                            .filter((v, i, a) => v && a.indexOf(v) === i)
-                                            .slice(0, 40);
-                                        return 'not-found|' + visible.join(';');
-                                    }
-                                """)
-                                if result and result.startswith("clicked:"):
-                                    excel_clicked_in = label
-                                    log.info("Excel option clicked in %s: %s", label, result)
-                                    break
-                                elif result:
-                                    log.info("Excel search in %s: %s", label, result[:300])
-                            except Exception as ex:
-                                log.info("Excel search error in %s: %s", label, ex)
-                                continue
-                        if excel_clicked_in is None:
-                            viewer_page.wait_for_timeout(500)
+                    # Retry opening the dropdown up to 3 times in case the report
+                    # was still rendering when the dropdown was first opened.
+                    for _attempt in range(3):
+                        if _attempt > 0:
+                            log.info("Excel not found on attempt %d — re-opening dropdown", _attempt + 1)
+                            # Re-click the export dropdown trigger
+                            for _rlabel, _rc in _contexts(viewer_page):
+                                try:
+                                    trigger = _rc.locator('a[title="Export drop down menu"]').first
+                                    if trigger.count() > 0 and trigger.is_visible(timeout=500):
+                                        trigger.click()
+                                        log.info("Re-opened export dropdown in %s", _rlabel)
+                                        viewer_page.wait_for_timeout(1_500)
+                                        break
+                                except Exception:
+                                    continue
+
+                        deadline = time.time() + 20
+                        while time.time() < deadline and excel_clicked_in is None:
+                            for label, c in _contexts(viewer_page):
+                                try:
+                                    result = c.evaluate(EXCEL_SEARCH_JS)
+                                    if result and result.startswith("clicked:"):
+                                        excel_clicked_in = label
+                                        log.info("Excel option clicked in %s: %s", label, result)
+                                        break
+                                    elif result:
+                                        log.info("Excel search in %s: %s", label, result[:300])
+                                except Exception as ex:
+                                    log.info("Excel search error in %s: %s", label, ex)
+                                    continue
+                            if excel_clicked_in is None:
+                                viewer_page.wait_for_timeout(500)
+
+                        if excel_clicked_in is not None:
+                            break
+                        # Wait for report to finish loading before next attempt
+                        log.info("Waiting 10s for report to finish rendering before retry…")
+                        viewer_page.wait_for_timeout(10_000)
 
                     if excel_clicked_in is None:
                         log.warning("Excel option not found after opening dropdown")
@@ -1031,10 +1173,15 @@ def open_report_viewer(
 
                         dl = captured_download["dl"]
                         if dl is not None:
-                            download_filename = (
+                            suggested = (
                                 dl.suggested_filename
                                 or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
                             )
+                            # Embed entity name so files don't overwrite each other
+                            stem = Path(suggested).stem
+                            ext = Path(suggested).suffix or ".xlsx"
+                            safe_entity = entity.replace(" ", "_").replace("/", "-")
+                            download_filename = f"{stem}_{safe_entity}{ext}"
                             save_path = DOWNLOADS_DIR / download_filename
                             try:
                                 dl.save_as(str(save_path))
