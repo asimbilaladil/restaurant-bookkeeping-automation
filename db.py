@@ -43,11 +43,16 @@ def init_db() -> None:
                 je_difference       REAL,
                 je_balanced         INTEGER,
                 attachment_status   TEXT,
+                approved            TEXT,         -- 'approved' | 'failed' | 'skipped'
                 log_filename        TEXT,
                 created_at          TEXT          -- UTC timestamp of when this run executed
             )
             """
         )
+        # Migration: add `approved` to tables created before this column existed.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(dss_runs)")}
+        if "approved" not in existing:
+            conn.execute("ALTER TABLE dss_runs ADD COLUMN approved TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dss_runs_run_date ON dss_runs (run_date)"
         )
@@ -66,6 +71,7 @@ def record_run(
     je_difference=None,
     je_balanced=None,
     attachment_status=None,
+    approved=None,
     log_filename=None,
 ) -> int:
     """Insert a new run record and return its row id."""
@@ -75,8 +81,9 @@ def record_run(
             """
             INSERT INTO dss_runs (
                 establishment_id, establishment_name, run_date, status, error,
-                je_difference, je_balanced, attachment_status, log_filename, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                je_difference, je_balanced, attachment_status, approved,
+                log_filename, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 establishment_id,
@@ -87,6 +94,7 @@ def record_run(
                 je_difference,
                 1 if je_balanced else 0 if je_balanced is not None else None,
                 attachment_status,
+                approved,
                 log_filename,
                 created_at,
             ),

@@ -450,13 +450,17 @@ def r365_reconcile_all():
                     attach_shot = result.get("attachment_screenshot_filename")
                     je_balanced = result.get("je_balanced", True)
                     je_difference = result.get("je_difference", 0.0)
-                    # Success means the JE actually balances. An unbalanced entry was
-                    # posted but is not correct, so it is recorded as failed.
-                    run_status = "success" if je_balanced else "failed"
+                    approved = result.get("approved", "skipped")
+                    # Success means the JE balanced AND R365 accepted the approval.
+                    # A balanced-but-unapproved JE is saved in "Unapproved" state,
+                    # so it is recorded as failed, not success.
+                    approved_ok = result.get("approved_ok", je_balanced and approved == "approved")
+                    run_status = "success" if approved_ok else "failed"
                     _record_run(est_id, name, target_date, run_status,
                                 je_difference=je_difference,
                                 je_balanced=je_balanced,
                                 attachment_status=result.get("attachment_status", "skipped"),
+                                approved=approved,
                                 log_filename=log_path.name)
                     event_queue.put({
                         "type": "r365_progress",
@@ -470,6 +474,7 @@ def r365_reconcile_all():
                         "log_url": f"/logs/{log_path.name}",
                         "je_difference": je_difference,
                         "je_balanced": je_balanced,
+                        "approved": approved,
                     })
             except Exception as exc:
                 log.error("R365 reconcile error for est %s: %s", est_id, exc)

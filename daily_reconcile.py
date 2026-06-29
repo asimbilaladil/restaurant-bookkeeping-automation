@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 # Importing server runs load_dotenv()/db.init_db() and configures logging.
 # We reuse its helpers (_extract_revel_values, _record_run, _entity_log) so the
 # recorded runs are identical to the web flow.
+import db
 import server
 from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
 from r365 import open_r365_journal_entry
@@ -34,11 +35,36 @@ def _target_date() -> date:
     return (datetime.now(timezone.utc) - timedelta(days=1)).date()
 
 
+def _pending_establishments(target_date: date) -> list[int]:
+    """Establishments that do NOT yet have a successful run for target_date.
+
+    This is what makes the job safe to re-run on a 30-minute cron: each pass
+    only processes the locations still failing (e.g. because R365 hasn't
+    imported their DSS yet — see the import-lag behaviour). Once a location
+    succeeds it is skipped on every subsequent retry.
+    """
+    pending = []
+    for est in DEFAULT_ESTABLISHMENTS:
+        done = db.count_runs(run_date=str(target_date), establishment_id=est, status="success")
+        if not done:
+            pending.append(est)
+    return pending
+
+
 def main() -> int:
     target_date = _target_date()
-    log.info("=== Daily reconcile START — date=%s, all locations ===", target_date)
 
-    results = fetch_reports(target_date, DEFAULT_ESTABLISHMENTS)
+    pending = _pending_establishments(target_date)
+    if not pending:
+        log.info("=== Daily reconcile — all %d locations already successful for %s; nothing to do ===",
+                 len(DEFAULT_ESTABLISHMENTS), target_date)
+        return 0
+
+    log.info("=== Daily reconcile START — date=%s, %d/%d location(s) pending: %s ===",
+             target_date, len(pending), len(DEFAULT_ESTABLISHMENTS),
+             [ESTABLISHMENT_NAMES.get(e, e) for e in pending])
+
+    results = fetch_reports(target_date, pending)
     log.info("Fetched Revel data for %d establishment(s)", len(results))
 
     ok = failed = errored = 0
@@ -70,16 +96,21 @@ def main() -> int:
             else:
                 je_balanced = result.get("je_balanced", True)
                 je_difference = result.get("je_difference", 0.0)
-                # Success means the JE actually balances (same rule as the web flow).
-                run_status = "success" if je_balanced else "failed"
-                ok += int(je_balanced)
-                failed += int(not je_balanced)
-                log.info("est %s (%s) → %s (diff=%.2f)",
-                         est_id, name, run_status, je_difference)
+                approved = result.get("approved", "skipped")
+                # Success means the JE balanced AND R365 accepted the approval.
+                # A balanced-but-unapproved JE is saved in "Unapproved" state —
+                # that's not done, so it counts as failed (same rule web flow uses).
+                approved_ok = result.get("approved_ok", je_balanced and approved == "approved")
+                run_status = "success" if approved_ok else "failed"
+                ok += int(approved_ok)
+                failed += int(not approved_ok)
+                log.info("est %s (%s) → %s (diff=%.2f, approved=%s)",
+                         est_id, name, run_status, je_difference, approved)
                 server._record_run(est_id, name, target_date, run_status,
                                    je_difference=je_difference,
                                    je_balanced=je_balanced,
                                    attachment_status=result.get("attachment_status", "skipped"),
+                                   approved=approved,
                                    log_filename=log_path.name)
         except Exception as exc:
             errored += 1

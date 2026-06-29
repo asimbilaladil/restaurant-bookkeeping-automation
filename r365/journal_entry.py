@@ -649,7 +649,7 @@ def fill_journal_entry(
     screenshot_path: str = "/tmp/r365_je_filled.png",
     attachment_path: str | None = None,
     attachment_screenshot_path: str | None = None,
-) -> tuple[float, str]:
+) -> tuple[float, str, str]:
     """
     Fill R365 Journal Entry from Revel data.
 
@@ -1045,6 +1045,11 @@ def fill_journal_entry(
     # this: an unbalanced entry gets neither the file nor approval.
     je_balanced = round(je_diff or 0.0, 2) == 0.0
 
+    # Approval outcome: "skipped" (unbalanced, never attempted), "approved", or
+    # "failed". Surfaced to the caller so a saved-but-not-approved JE is not
+    # mistaken for a fully successful reconcile.
+    approved = "skipped"
+
     # Upload Revel xlsx attachment before saving (so it persists with the JE) —
     # but only when balanced; an unbalanced entry should not get the file.
     attachment_status = "skipped"
@@ -1093,6 +1098,16 @@ def fill_journal_entry(
     # dropdown). "balanced" matches the downstream definition: round(diff,2)==0.
     if je_balanced:
         try:
+            # After Save, R365 re-renders the toolbar — the approveMenuItem <li>
+            # is briefly absent from the DOM, so a fixed sleep + immediate click
+            # races the rebuild and finds nothing ("approveMenuItem not found").
+            # Wait for the item to reappear before clicking. It lives inside a
+            # collapsed dropdown (visible:false), but a JS .click() on the hidden
+            # <li> still fires its ng-click handler (same as saveMenuItem).
+            active.wait_for_function(
+                "() => !!document.querySelector('[data-testid=\"approveMenuItem\"]')",
+                timeout=15_000,
+            )
             # Clicking Approve fires a POST to ServiceStack/SaveTransaction. Wait
             # for that response instead of a fixed sleep — once it returns OK the
             # approval has landed and we're good to move on to the next entity.
@@ -1101,7 +1116,7 @@ def fill_journal_entry(
                           and r.request.method == "POST",
                 timeout=20_000,
             ) as resp_info:
-                approved = active.evaluate("""
+                clicked = active.evaluate("""
                     () => {
                         const el = document.querySelector('[data-testid="approveMenuItem"]');
                         if (!el) return 'approveMenuItem not found';
@@ -1109,20 +1124,23 @@ def fill_journal_entry(
                         return 'clicked';
                     }
                 """)
-                log.info("Approve JS click result: %s", approved)
+                log.info("Approve JS click result: %s", clicked)
             resp = resp_info.value
             if resp.ok:
+                approved = "approved"
                 log.info("DSS form approved — SaveTransaction HTTP %s (JE balanced, diff=%.2f)",
                          resp.status, je_diff or 0.0)
             else:
+                approved = "failed"
                 log.warning("Approve SaveTransaction returned HTTP %s — approval may have failed",
                             resp.status)
         except Exception as e:
+            approved = "failed"
             log.warning("Approve failed (no SaveTransaction success): %s", e)
     else:
         log.info("Skipping Approve — JE not balanced (diff=%.2f)", je_diff or 0.0)
 
-    return je_diff, attachment_status
+    return je_diff, attachment_status, approved
 
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
@@ -1137,10 +1155,11 @@ def go_to_daily_sales_summary(
     before_screenshot_path: str = "/tmp/r365_je_before.png",
     attachment_path: str | None = None,
     attachment_screenshot_path: str | None = None,
-) -> tuple[float, str]:
+) -> tuple[float, str, str]:
     log.info("Navigating directly to Daily Sales Summary...")
     je_diff = 0.0
     attachment_status = "skipped"
+    approved = "skipped"
     page.goto(DSS_URL, timeout=60_000, wait_until="domcontentloaded")
     page.wait_for_timeout(15_000)  # let legacy iframe fully settle
     log.info("DSS page loaded — at: %s", page.url)
@@ -1150,9 +1169,18 @@ def go_to_daily_sales_summary(
         None,
     )
     if not dss_frame:
-        log.warning("DSS iframe not found — saving screenshot")
+        # The DSS grid iframe never loaded — almost always because the page is
+        # still on the SSO/signin-oidc redirect and never reached the real Daily
+        # Sales Summary. No JE was opened, filled, saved, or approved. This is a
+        # hard failure, NOT a balanced/successful reconcile: returning here with
+        # je_diff=0.0 would otherwise be mistaken for "balanced". Raise so the
+        # caller records it as an error with a clear reason.
+        log.warning("DSS iframe not found (page at %s) — saving screenshot", page.url)
         page.screenshot(path="/tmp/r365_dss_list.png")
-        return 0.0, attachment_status
+        raise RuntimeError(
+            f"DSS grid iframe not found — page never left {page.url} "
+            "(SSO redirect did not complete to Daily Sales Summary)"
+        )
 
     if target_date:
         date_str = target_date.strftime("%-m/%-d/%Y")
@@ -1217,7 +1245,7 @@ def go_to_daily_sales_summary(
                     found_je = True
 
                     if revel_values and found_je:
-                        je_diff, attachment_status = fill_journal_entry(
+                        je_diff, attachment_status, approved = fill_journal_entry(
                             active, revel_values,
                             screenshot_path=screenshot_path,
                             attachment_path=attachment_path,
@@ -1240,7 +1268,7 @@ def go_to_daily_sales_summary(
             except Exception:
                 pass
 
-    return je_diff, attachment_status
+    return je_diff, attachment_status, approved
 
 
 # ─── Main entry (used by server.py) ──────────────────────────────────────────
@@ -1267,6 +1295,19 @@ def open_r365_journal_entry(
     after_filename      = f"r365_je_{safe_name}_{date_str}_after.png"
     attachment_filename = f"r365_attach_{safe_name}_{date_str}.png"
 
+    # Remove any screenshots left over from a previous run for this same
+    # location/date. The /tmp paths are reused across runs, so if this run aborts
+    # before regenerating them (e.g. the DSS page fails to load), the UI would
+    # otherwise display a stale image from an earlier run alongside this run's
+    # status — exactly the "success badge + old unbalanced screenshot" mismatch.
+    for _stale in (before_filename, after_filename, attachment_filename):
+        try:
+            os.remove(f"/tmp/{_stale}")
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("Could not remove stale screenshot /tmp/%s: %s", _stale, e)
+
     try:
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
@@ -1278,7 +1319,7 @@ def open_r365_journal_entry(
 
             page = context.pages[0] if context.pages else context.new_page()
             ensure_logged_in_r365(page, context)
-            je_diff, attachment_status = go_to_daily_sales_summary(
+            je_diff, attachment_status, approved = go_to_daily_sales_summary(
                 page, target_date, context, location_name, revel_values,
                 screenshot_path=f"/tmp/{after_filename}",
                 before_screenshot_path=f"/tmp/{before_filename}",
@@ -1288,6 +1329,7 @@ def open_r365_journal_entry(
 
             active_pages = context.pages
             url = active_pages[-1].url if active_pages else DSS_URL
+            je_balanced = (je_diff or 0.0) == 0.0
             return {
                 "status": "ok",
                 "url": url,
@@ -1296,7 +1338,12 @@ def open_r365_journal_entry(
                 "attachment_screenshot_filename": attachment_filename if attachment_status != "skipped" else None,
                 "attachment_status": attachment_status,
                 "je_difference": round(je_diff or 0.0, 2),
-                "je_balanced": (je_diff or 0.0) == 0.0,
+                "je_balanced": je_balanced,
+                "approved": approved,
+                # A reconcile is only fully done when the JE balances AND R365
+                # actually accepted the approval. Saved-but-not-approved is NOT
+                # success — it leaves the DSS in "Unapproved" state.
+                "approved_ok": je_balanced and approved == "approved",
             }
 
     except Exception as exc:
