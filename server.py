@@ -558,15 +558,25 @@ def _extract_revel_values(data: dict) -> dict:
     beverage_sales = f(class_map.get("2. Beverage", {}).get("taxable_sales", 0))
     del_row      = class_map.get("5. Delivery - Food", {})
     delivery_sales = round(f(del_row.get("taxable_sales", 0)) + f(del_row.get("untaxable_sales", 0)), 2)
-    other_row    = class_map.get("Unknown Class", {})
-    other_sales  = round(f(other_row.get("taxable_sales", 0)) + f(other_row.get("untaxable_sales", 0)), 2)
+    # Other Sales (4000-07) = Revel "Unknown Class" + "4. Other Sales" classes,
+    # each summed over taxable + untaxable. R365's native import already combines
+    # these two (e.g. 10.69 + 4.99 = 15.68); we must do the same or the JE is short.
+    other_sales = round(sum(
+        f(class_map.get(cls, {}).get("taxable_sales", 0)) +
+        f(class_map.get(cls, {}).get("untaxable_sales", 0))
+        for cls in ("Unknown Class", "4. Other Sales")
+    ), 2)
 
     # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
     net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
     if net_sales_untaxed != 0:
         tax_exempt_amount = round(abs(net_sales_untaxed), 2)
-        food_sales        = round(food_sales + tax_exempt_amount, 2)
-        tax_exempt_field  = "debit"
+        # Reclassify the tax-exempt portion OUT of 4000-01 Food Sales and onto
+        # 4000-011 as its own credit (accountant: "adjust through food sales").
+        # Subtract from food_sales credit so total revenue is unchanged and the
+        # JE stays balanced without an extra debit.
+        food_sales        = round(food_sales - tax_exempt_amount, 2)
+        tax_exempt_field  = "credit"
     else:
         tax_exempt_field  = None
         tax_exempt_amount = 0.0

@@ -698,6 +698,47 @@ def fill_journal_entry(
     except Exception as e:
         log.warning("JE grid rows not detected within 15s: %s", e)
 
+    # ── Self-heal a previously-saved tax-exempt row on the wrong side ──────────
+    # Earlier versions booked 4000-011 (a revenue account) as a DEBIT. If a saved
+    # JE still has it on the debit side (or with the wrong amount), the dedup
+    # guard further down refuses to touch it and the entry stays mis-booked.
+    # Recreating the JE wipes our manual rows back to R365's native generation so
+    # the corrected credit-side fill can apply cleanly. Done before the fill so it
+    # self-heals on re-run rather than getting stuck.
+    heal_amount = round(float(revel_values.get("tax_exempt_amount") or 0), 2)
+    if heal_amount:
+        stale_debit  = _read_je_cell_value(je_frame, "4000-011", "debit")
+        stale_credit = _read_je_cell_value(je_frame, "4000-011", "credit")
+        if stale_debit or (stale_credit and stale_credit != heal_amount):
+            log.warning(
+                "Stale 4000-011 row (debit=%.2f credit=%.2f, want credit=%.2f) — recreating JE to reset",
+                stale_debit, stale_credit, heal_amount,
+            )
+            _recreate_journal_entry(active)
+            # Switch back to the Journal Entry tab and re-detect the grid frame.
+            for f in list(active.frames) + [active]:
+                try:
+                    je_tab = f.locator('li[role="tab"] span.k-link', has_text="Journal Entry").first
+                    if je_tab.count() > 0:
+                        je_tab.scroll_into_view_if_needed()
+                        je_tab.click()
+                        active.wait_for_timeout(4_000)
+                        break
+                except Exception:
+                    continue
+            for f in active.frames:
+                try:
+                    if f.locator('td:has-text("Food Delivery Sales")').count() > 0:
+                        je_frame = f
+                        break
+                except Exception:
+                    continue
+            try:
+                je_frame.locator('tr[role="row"]').first.wait_for(state="attached", timeout=15_000)
+                log.info("JE grid re-detected after stale-row recreate")
+            except Exception as e:
+                log.warning("JE grid not re-detected after stale-row recreate: %s", e)
+
     # ── Auto-assign unassigned payment-type items (rows showing '-') ──────────
     # A '-' account row is an unmapped item (e.g. a coupon/comp) that unbalances
     # the JE. R365 remembers the mapping, so ticking it + Update reassigns it.
@@ -915,19 +956,21 @@ def fill_journal_entry(
                     je_frame.wait_for_timeout(1200)
                     acct_input.press("Enter")
                     je_frame.wait_for_timeout(500)
-                    # Tab to Debit field; tax_exempt_field is always "debit"
-                    acct_input.press("Tab")  # → Debit field
+                    # 4000-011 is a revenue account → tax_exempt_field is "credit".
+                    # Column order is Account → Debit → Credit → Comment, so Tab
+                    # past Debit into the Credit field before typing the amount.
+                    acct_input.press("Tab")        # → Debit field (skip)
+                    active.keyboard.press("Tab")   # → Credit field
                     active.keyboard.type(f"{tax_exempt_amount:.2f}")
                     je_frame.wait_for_timeout(300)
                     # Tab to Comment and fill
-                    active.keyboard.press("Tab")  # → Credit (skip)
-                    active.keyboard.press("Tab")  # → Comment
+                    active.keyboard.press("Tab")   # → Comment
                     active.keyboard.type("Untaxed Net Sales")
                     je_frame.wait_for_timeout(300)
                     # Click Add — scoped to grid toolbar
                     je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
                     je_frame.wait_for_timeout(1000)
-                    log.info("✅ 4000-011 row added: %.2f debit 'Untaxed Net Sales'", tax_exempt_amount)
+                    log.info("✅ 4000-011 row added: %.2f credit 'Untaxed Net Sales'", tax_exempt_amount)
         except Exception as e:
             log.warning("Could not add 4000-011 tax-exempt row: %s", e)
 

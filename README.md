@@ -120,6 +120,7 @@ Each R365 Journal Entry account is mapped to one or more Revel JSON fields. The 
 | **4000-011 Food Sales-Tax Exempt** *(optional row, added only when needed)* | Debit | `abs(sales_data.net_sales_untaxed)` — added as a new JE row with comment "Untaxed Net Sales". Also adds this amount on top of Food Sales. | `sales_data.net_sales_untaxed` |
 | **4000-02 Beverage Sales** | Credit | `product_mix_data["2. Beverage"].taxable_sales` | `product_mix_data` — row where `product_class == "2. Beverage"` |
 | **4000-08 Food Delivery Sales** | Credit | `product_mix_data["5. Delivery - Food"].taxable_sales` + `product_mix_data["5. Delivery - Food"].untaxable_sales` | `product_mix_data` — row where `product_class == "5. Delivery - Food"` |
+| **4000-07 Other Sales** | Credit | (`product_mix_data["Unknown Class"].taxable_sales` + `.untaxable_sales`) + (`product_mix_data["4. Other Sales"].taxable_sales` + `.untaxable_sales`) — i.e. **both** the `Unknown Class` **and** `4. Other Sales` classes summed together (R365's native import combines them, e.g. 10.69 + 4.99 = 15.68). | `product_mix_data` — rows where `product_class == "Unknown Class"` or `"4. Other Sales"` |
 | **2240-000 Sales Tax Payable** | Credit | `tax_data[totals_row].tax` | `tax_data` — first row where `row_type == "totals_row"` |
 | **70250 Credit Card Fees** | Credit | `sales_data.adj_credit_tips` | `sales_data` |
 | **2301 Employee Tips Payable** | Debit | `sales_data.adj_credit_tips` | `sales_data` |
