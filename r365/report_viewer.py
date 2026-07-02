@@ -750,7 +750,7 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
                 '#ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink'
             ).first
             drop.click(timeout=8_000)
-            detail_page.wait_for_timeout(800)
+            detail_page.wait_for_timeout(200)
             detail_page.locator('a[title="Excel"]').first.click(timeout=5_000)
             log.info("Excel export via UI click")
 
