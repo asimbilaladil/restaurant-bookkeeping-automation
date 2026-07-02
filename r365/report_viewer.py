@@ -649,14 +649,16 @@ def _select_filter_entity(ctx, page, entity: str) -> str:
 def _click_view_report_and_export(detail_page, entity: str, start_date, end_date, emit_fn=None) -> str | None:
     """Click View Report on the SSRS GL Account Detail page, wait for render, export to Excel."""
 
-    def _all_ctx(page):
+    def _frames(page):
+        """Yield page + all sub-frames (re-evaluated each call so post-render frames are fresh)."""
         yield page
         for f in page.frames:
             if f is not page.main_frame:
                 yield f
 
-    # Click View Report
-    for ctx in _all_ctx(detail_page):
+    # ── Click View Report ──────────────────────────────────────────────
+    vr_clicked = False
+    for ctx in _frames(detail_page):
         try:
             r = ctx.evaluate("""
                 () => {
@@ -670,20 +672,29 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
                     return 'not-found';
                 }
             """)
-            log.info("View Report click: %s", r)
+            log.info("View Report click in frame [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
             if r != "not-found":
+                vr_clicked = True
                 break
         except Exception as e:
             log.debug("View Report frame error: %s", e)
 
-    detail_page.wait_for_timeout(2_000)
+    if not vr_clicked:
+        log.warning("View Report button not found in any frame")
+
+    # Wait for the report to fully render after View Report
+    detail_page.wait_for_timeout(3_000)
     try:
         detail_page.wait_for_load_state("networkidle", timeout=60_000)
     except Exception:
         pass
-    detail_page.wait_for_timeout(3_000)
+    detail_page.wait_for_timeout(4_000)
 
-    # Build download filename
+    # Log available frames so we can debug if export fails
+    for f in detail_page.frames:
+        log.info("Frame after render: %s", (f.url or "<blank>")[:100])
+
+    # ── Build download filename ────────────────────────────────────────
     entity_slug = entity.replace(" ", "_").replace("/", "-")
     s_str = f"{start_date.month}-{start_date.day}-{start_date.year}" if start_date else "nostart"
     e_str = f"{end_date.month}-{end_date.day}-{end_date.year}" if end_date else "noend"
@@ -691,52 +702,78 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
     dest = DOWNLOADS_DIR / filename
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # ── Export to Excel ────────────────────────────────────────────────
+    # Strategy 1: call $find('ReportViewerControl').exportReport() directly in SSRS frame
+    # Strategy 2: click export dropdown → click Excel link
     try:
-        with detail_page.expect_download(timeout=60_000) as dl_info:
-            # Open the export dropdown
-            for ctx in _all_ctx(detail_page):
+        with detail_page.expect_download(timeout=90_000) as dl_info:
+            exported = False
+
+            # Strategy 1 — direct API call (most reliable, no UI interaction needed)
+            for ctx in _frames(detail_page):
                 try:
                     r = ctx.evaluate("""
                         () => {
-                            const btn = document.getElementById(
-                                'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink');
-                            if (btn) { btn.click(); return 'dropdown-opened'; }
-                            // Fallback: any export/save glyph button
-                            const glyph = document.querySelector('.glyphui-save');
-                            if (glyph) {
-                                const a = glyph.closest('a');
-                                if (a) { a.click(); return 'glyph-clicked'; }
-                            }
-                            return 'not-found';
+                            if (typeof $find === 'undefined') return 'no-$find';
+                            const rv = $find('ReportViewerControl');
+                            if (!rv) return 'rv-null';
+                            rv.exportReport('EXCELOPENXML');
+                            return 'exportReport-called';
                         }
                     """)
-                    log.info("Export dropdown: %s", r)
-                    if r != "not-found":
+                    log.info("Export via $find [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
+                    if r == "exportReport-called":
+                        exported = True
                         break
                 except Exception as e:
-                    log.debug("Export dropdown frame error: %s", e)
+                    log.debug("$find export error in frame: %s", e)
 
-            detail_page.wait_for_timeout(800)
-
-            # Click the Excel option
-            for ctx in _all_ctx(detail_page):
-                try:
-                    r = ctx.evaluate("""
-                        () => {
-                            const a = document.querySelector('a[title="Excel"]');
-                            if (a) { a.click(); return 'excel-clicked'; }
-                            if (typeof $find !== 'undefined') {
-                                const rv = $find('ReportViewerControl');
-                                if (rv) { rv.exportReport('EXCELOPENXML'); return 'exportReport-called'; }
+            if not exported:
+                # Strategy 2 — open dropdown, then click Excel
+                log.info("$find not available — trying dropdown UI")
+                for ctx in _frames(detail_page):
+                    try:
+                        r = ctx.evaluate("""
+                            () => {
+                                // Open the export dropdown
+                                const dropBtn = document.getElementById(
+                                    'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink');
+                                if (dropBtn) { dropBtn.click(); return 'dropdown-opened'; }
+                                const glyph = document.querySelector('.glyphui-save');
+                                if (glyph) {
+                                    const a = glyph.closest('a');
+                                    if (a) { a.click(); return 'glyph-clicked'; }
+                                }
+                                return 'not-found';
                             }
-                            return 'not-found';
-                        }
-                    """)
-                    log.info("Excel export click: %s", r)
-                    if r != "not-found":
-                        break
-                except Exception as e:
-                    log.debug("Excel export frame error: %s", e)
+                        """)
+                        log.info("Dropdown [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
+                        if r != "not-found":
+                            break
+                    except Exception as e:
+                        log.debug("Dropdown frame error: %s", e)
+
+                detail_page.wait_for_timeout(1_200)
+
+                # Click the Excel link (re-enumerate frames after dropdown opened)
+                for ctx in _frames(detail_page):
+                    try:
+                        r = ctx.evaluate("""
+                            () => {
+                                const a = document.querySelector('a[title="Excel"]');
+                                if (a) { a.click(); return 'excel-link-clicked'; }
+                                return 'not-found';
+                            }
+                        """)
+                        log.info("Excel link [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
+                        if r != "not-found":
+                            exported = True
+                            break
+                    except Exception as e:
+                        log.debug("Excel link frame error: %s", e)
+
+            if not exported:
+                log.warning("All export strategies failed — download may not trigger")
 
         download = dl_info.value
         download.save_as(dest)
@@ -747,6 +784,8 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
 
     except Exception as e:
         log.warning("Excel export failed: %s", e)
+        if emit_fn:
+            emit_fn(f"Excel export failed for {entity}: {e}")
         return None
 
 
