@@ -293,103 +293,57 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     log.info("Filter open: %s", open_filter)
     page.wait_for_timeout(2_500)
 
-    # ── Step 13: clear any existing legal entity selections ──────────
-    # Wait for the dialog to fully render before probing checkboxes
-    page.wait_for_timeout(2_000)
+    # ── Step 13: clear all entity selections via Select All × 2 ─────
+    # Pattern: click Select All once (selects everything), click again (deselects everything).
+    # This works regardless of the current mixed/checked/unchecked state.
+    page.wait_for_timeout(2_000)  # let dialog fully render
 
-    # Dump what's in the dialog for debugging
-    diag = ctx.evaluate("""
+    SELECT_ALL_JS = """
         () => {
-            const cbs = Array.from(document.querySelectorAll('md-checkbox'));
-            return {
-                total: cbs.length,
-                checked_aria: cbs.filter(c => c.getAttribute('aria-checked') === 'true').length,
-                checked_class: cbs.filter(c => c.classList.contains('_md-checked')).length,
-                sample: cbs.slice(0, 6).map(c => ({
-                    aria: c.getAttribute('aria-checked'),
-                    cls: c.className,
-                    ng: c.getAttribute('ng-model') || '',
-                    label: c.getAttribute('aria-label') || (c.textContent||'').trim().slice(0,30),
-                })),
-            };
+            // Search every visible element for "Select All" text
+            const candidates = Array.from(document.querySelectorAll(
+                'md-checkbox, li, button, a, div[role="checkbox"], ' +
+                'span[role="checkbox"], label, [ng-model*="selectAll"], ' +
+                '[aria-label*="Select All" i]'
+            )).filter(el => {
+                if (!el.offsetParent) return false;
+                const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+                const lbl = (el.getAttribute('aria-label') || '').trim();
+                return txt.toLowerCase() === 'select all'
+                    || lbl.toLowerCase().includes('select all')
+                    || el.getAttribute('ng-model') === 'selectAll'
+                    || (el.getAttribute('ng-model') || '').includes('selectAll');
+            });
+            if (candidates.length === 0) return 'not-found';
+            const el = candidates[0];
+            el.scrollIntoView({block: 'center'});
+            el.click();
+            return 'clicked:' + el.tagName + '/' + (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0,30);
         }
-    """)
-    log.info("Dialog checkbox diagnostic: %s", diag)
+    """
 
-    log.info("Clearing legal entity selections")
-    cleared = False
-
-    # Strategy 1: Select All checkbox (try multiple selectors)
-    for sel in [
-        'md-checkbox[ng-model="selectAll"]',
-        'md-checkbox[ng-model*="selectAll"]',
-        'md-checkbox[aria-label="Select All"]',
-        'md-checkbox[aria-label*="select all" i]',
-    ]:
-        for i in range(1, 5):
-            page.wait_for_timeout(500)
-            state = ctx.evaluate(f"""
-                () => {{
-                    const sa = document.querySelector({repr(sel)});
-                    return sa ? sa.getAttribute('aria-checked') : 'not-found';
-                }}
-            """)
-            log.info("Select All (%s) state %d: %s", sel, i, state)
-            if state == "false":
-                log.info("All deselected via Select All")
-                cleared = True
-                break
-            if state == "not-found":
-                break
-            ctx.evaluate(f"""
-                () => {{
-                    const sa = document.querySelector({repr(sel)});
-                    if (!sa) return;
-                    sa.scrollIntoView({{block:'center'}});
-                    sa.click();
-                }}
-            """)
-            page.wait_for_timeout(1_200)
-        if cleared:
-            break
-
-    if not cleared:
-        # Strategy 2: uncheck every checked md-checkbox individually
-        # Try both aria-checked="true" and ._md-checked class
-        n = ctx.evaluate("""
-            () => {
-                const byAria = Array.from(
-                    document.querySelectorAll('md-checkbox[aria-checked="true"]'));
-                const byClass = Array.from(
-                    document.querySelectorAll('md-checkbox._md-checked'));
-                // Union both sets
-                const all = [...new Set([...byAria, ...byClass])];
-                // Skip any "Select All" checkbox (we already tried that)
-                const items = all.filter(cb => {
-                    const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
-                    return !lbl.includes('select all');
-                });
-                items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
-                return { byAria: byAria.length, byClass: byClass.length, clicked: items.length };
-            }
-        """)
-        log.info("Fallback uncheck result: %s", n)
-        page.wait_for_timeout(1_500)
-
-        # Strategy 3: if still nothing found, try clicking li/div rows that look selected
-        if not n or n.get("clicked", 0) == 0:
-            n2 = ctx.evaluate("""
+    log.info("Clearing via Select All ×2")
+    for click_n in range(1, 3):
+        r = ctx.evaluate(SELECT_ALL_JS)
+        log.info("Select All click %d: %s", click_n, r)
+        if r == "not-found" and click_n == 1:
+            log.warning("Select All not found — attempting fallback uncheck")
+            # Fallback: directly uncheck every checked item
+            n = ctx.evaluate("""
                 () => {
-                    const selected = Array.from(document.querySelectorAll(
-                        'li[aria-selected="true"], li._md-focused, ' +
-                        '.md-checkbox-checked, [class*="selected"] md-checkbox'
-                    ));
-                    selected.forEach(el => el.click());
-                    return selected.length;
+                    const items = Array.from(document.querySelectorAll(
+                        'md-checkbox[aria-checked="true"], md-checkbox._md-checked'
+                    )).filter(cb => {
+                        const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
+                        return !lbl.includes('select all');
+                    });
+                    items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
+                    return items.length;
                 }
             """)
-            log.info("Strategy 3 (li/div selected): %s items clicked", n2)
-            page.wait_for_timeout(1_000)
+            log.info("Fallback uncheck: %s items", n)
+            break
+        page.wait_for_timeout(1_000)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
@@ -749,90 +703,27 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
     dest = DOWNLOADS_DIR / filename
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Export to Excel ────────────────────────────────────────────────
-    # Take a screenshot so we can see what the page looks like before export
-    _snap_name = f"before_export_{entity.replace(' ', '_')[:20]}"
-    try:
-        detail_page.screenshot(path=f"/tmp/{_snap_name}.png", full_page=False)
-        log.info("Pre-export screenshot: %s.png", _snap_name)
-    except Exception:
-        pass
+    # ── Export to Excel via direct SSRS URL ───────────────────────────
+    # SSRS exports by appending rs:Format=EXCELOPENXML to the report URL.
+    # This is more reliable than UI clicks and doesn't depend on toolbar DOM.
+    import re as _re
+
+    current_url = detail_page.url
+    log.info("Detail page URL for export: %s", current_url[:200])
+
+    if "rs:Format=" in current_url:
+        export_url = _re.sub(r"rs:Format=[^&]+", "rs:Format=EXCELOPENXML", current_url)
+    else:
+        export_url = current_url + "&rs:Format=EXCELOPENXML"
+
+    log.info("Export URL: %s", export_url[:200])
 
     try:
         with detail_page.expect_download(timeout=90_000) as dl_info:
-            exported = False
-
-            # Strategy 1 — Playwright native locator (handles frames automatically)
-            # The SSRS toolbar is in the main frame of the GL Account Detail page.
             try:
-                drop_btn = detail_page.locator(
-                    '#ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink, '
-                    'a:has(.glyphui-save)'
-                ).first
-                drop_btn.click(timeout=8_000)
-                log.info("Export dropdown clicked via locator")
-                detail_page.wait_for_timeout(1_000)
-
-                excel_link = detail_page.locator('a[title="Excel"]').first
-                excel_link.click(timeout=5_000)
-                log.info("Excel link clicked via locator")
-                exported = True
-            except Exception as e1:
-                log.warning("Locator export failed (%s) — trying frame search", e1)
-
-            if not exported:
-                # Strategy 2 — walk all frames and call $find directly
-                for ctx in _frames(detail_page):
-                    try:
-                        r = ctx.evaluate("""
-                            () => {
-                                if (typeof $find === 'undefined') return 'no-$find';
-                                const rv = $find('ReportViewerControl');
-                                if (!rv) return 'rv-null';
-                                rv.exportReport('EXCELOPENXML');
-                                return 'ok';
-                            }
-                        """)
-                        log.info("$find export [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
-                        if r == "ok":
-                            exported = True
-                            break
-                    except Exception as e2:
-                        log.debug("$find frame error: %s", e2)
-
-            if not exported:
-                # Strategy 3 — JS click across all frames
-                for ctx in _frames(detail_page):
-                    try:
-                        r = ctx.evaluate("""
-                            () => {
-                                const drop = document.getElementById(
-                                    'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink')
-                                    || document.querySelector('a:has(.glyphui-save),.glyphui-save');
-                                if (drop) {
-                                    const a = drop.closest ? drop.closest('a') || drop : drop;
-                                    a.click();
-                                    return 'drop-clicked';
-                                }
-                                return 'not-found';
-                            }
-                        """)
-                        log.info("JS drop [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
-                        if r != "not-found":
-                            detail_page.wait_for_timeout(1_000)
-                            ctx.evaluate("""
-                                () => {
-                                    const a = document.querySelector('a[title="Excel"]');
-                                    if (a) { a.click(); return 'ok'; }
-                                }
-                            """)
-                            exported = True
-                            break
-                    except Exception as e3:
-                        log.debug("JS drop frame error: %s", e3)
-
-            if not exported:
-                log.warning("All export strategies failed")
+                detail_page.goto(export_url, wait_until="commit", timeout=60_000)
+            except Exception as ge:
+                log.warning("Export goto warning (non-fatal): %s", ge)
 
         download = dl_info.value
         download.save_as(dest)
@@ -842,9 +733,38 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
         return str(dest)
 
     except Exception as e:
-        log.warning("Excel export failed: %s", e)
+        log.warning("URL export failed (%s) — trying UI click fallback", e)
+
+    # Fallback: click the export dropdown → Excel in the SSRS toolbar
+    try:
+        with detail_page.expect_download(timeout=60_000) as dl_info:
+            # Re-navigate to detail page first (export URL may have changed it)
+            try:
+                detail_page.goto(current_url, wait_until="domcontentloaded", timeout=30_000)
+                detail_page.wait_for_load_state("networkidle", timeout=30_000)
+            except Exception:
+                pass
+
+            # Click the save/export dropdown button
+            drop = detail_page.locator(
+                '#ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink'
+            ).first
+            drop.click(timeout=8_000)
+            detail_page.wait_for_timeout(800)
+            detail_page.locator('a[title="Excel"]').first.click(timeout=5_000)
+            log.info("Excel export via UI click")
+
+        download = dl_info.value
+        download.save_as(dest)
+        log.info("Excel saved (UI fallback): %s", dest)
         if emit_fn:
-            emit_fn(f"Excel export failed for {entity}: {e}")
+            emit_fn(f"Excel saved: {filename}")
+        return str(dest)
+
+    except Exception as e2:
+        log.warning("UI export fallback also failed: %s", e2)
+        if emit_fn:
+            emit_fn(f"Excel export failed for {entity}: {e2}")
         return None
 
 
