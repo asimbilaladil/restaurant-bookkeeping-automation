@@ -294,11 +294,37 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     page.wait_for_timeout(2_500)
 
     # ── Step 13: clear all entity selections ─────────────────────────
-    # Strategy: repeatedly uncheck every currently-checked md-checkbox
-    # (except "Select All") until none remain. More reliable than trying
-    # to find and click a Select All toggle, whose location varies.
     page.wait_for_timeout(2_500)  # let dialog fully render
 
+    # Diagnostic snapshot: what does the DOM look like right now?
+    diag = ctx.evaluate("""
+        () => {
+            const dialogs = Array.from(document.querySelectorAll(
+                'md-dialog, .md-dialog-container, [role="dialog"]'
+            )).filter(d => d.offsetParent !== null);
+            const allCheckboxes = Array.from(document.querySelectorAll('md-checkbox'))
+                .filter(cb => cb.offsetParent !== null);
+            const chipEls = Array.from(document.querySelectorAll('md-chip, .md-chip, [class*="chip"]'))
+                .filter(c => c.offsetParent !== null);
+            const checked = allCheckboxes.filter(cb => {
+                const ac = cb.getAttribute('aria-checked');
+                const cls = cb.className || '';
+                return ac === 'true' || cls.includes('_md-checked') || cls.includes('md-checked');
+            });
+            return {
+                dialogs: dialogs.length,
+                allCheckboxes: allCheckboxes.length,
+                checked: checked.length,
+                checkedLabels: checked.map(cb =>
+                    (cb.getAttribute('aria-label') || cb.textContent || '').trim().slice(0, 40)
+                ),
+                chips: chipEls.slice(0, 8).map(c => (c.textContent || '').trim().slice(0, 40)),
+            };
+        }
+    """)
+    log.info("Filter dialog diagnostic: %s", diag)
+
+    # Strategy A: uncheck every checked md-checkbox (except Select All)
     UNCHECK_ALL_JS = """
         () => {
             const items = Array.from(document.querySelectorAll('md-checkbox'))
@@ -322,7 +348,8 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     """
 
     log.info("Clearing existing entity selections (iterative uncheck)")
-    for attempt in range(1, 5):
+    total_unchecked = 0
+    for attempt in range(1, 6):
         try:
             unchecked = ctx.evaluate(UNCHECK_ALL_JS)
         except Exception as ue:
@@ -330,9 +357,39 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
             unchecked = []
         log.info("Uncheck attempt %d: %s items → %s",
                  attempt, len(unchecked), unchecked[:5])
+        total_unchecked += len(unchecked)
         if not unchecked:
             break
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(700)
+
+    # Strategy B: if uncheck found nothing but diagnostic showed items are selected
+    # elsewhere (chips/tags), try removing them via X buttons.
+    if total_unchecked == 0 and diag.get("chips"):
+        log.info("No checkboxes unchecked but chips present — attempting chip removal")
+        removed = ctx.evaluate("""
+            () => {
+                const chips = Array.from(document.querySelectorAll(
+                    'md-chip .md-chip-remove, .md-chip button, md-chip button, ' +
+                    '[class*="chip"] [aria-label*="Remove" i], ' +
+                    '[class*="chip"] button.remove, [class*="chip"] .remove'
+                )).filter(el => el.offsetParent !== null);
+                chips.forEach(el => el.click());
+                return chips.length;
+            }
+        """)
+        log.info("Removed %d chip(s)", removed)
+        page.wait_for_timeout(1_000)
+
+    # Strategy C: last resort — clear via search input by pressing backspace many times
+    if total_unchecked == 0 and diag.get("checked", 0) == 0 and diag.get("chips"):
+        log.info("Trying backspace clear of filter input")
+        try:
+            page.keyboard.press("End")
+            for _ in range(30):
+                page.keyboard.press("Backspace")
+            page.wait_for_timeout(500)
+        except Exception as be:
+            log.warning("Backspace clear failed: %s", be)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
@@ -692,68 +749,92 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
     dest = DOWNLOADS_DIR / filename
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Export to Excel via direct SSRS URL ───────────────────────────
-    # SSRS exports by appending rs:Format=EXCELOPENXML to the report URL.
-    # This is more reliable than UI clicks and doesn't depend on toolbar DOM.
-    import re as _re
+    # ── Export to Excel ───────────────────────────────────────────────
+    # Strategy 1 (primary): call SSRS JS API $find('ReportViewerControl').exportReport('EXCELOPENXML')
+    #   — this is exactly what the toolbar Excel link's onclick does. Reliable
+    #   because it triggers the same postback the UI uses.
+    # Strategy 2 (fallback): click the Excel <a> element directly (bypass menu).
+    # Strategy 3 (fallback): URL-based rs:Format=EXCELOPENXML navigation.
 
     current_url = detail_page.url
     log.info("Detail page URL for export: %s", current_url[:200])
 
+    # Strategy 1: JS API
+    try:
+        with detail_page.expect_download(timeout=60_000) as dl_info:
+            r = detail_page.evaluate("""
+                () => {
+                    try {
+                        if (typeof $find !== 'undefined') {
+                            const rv = $find('ReportViewerControl');
+                            if (rv && typeof rv.exportReport === 'function') {
+                                rv.exportReport('EXCELOPENXML');
+                                return 'js-api-called';
+                            }
+                            return 'rv-not-found';
+                        }
+                        return '$find-undefined';
+                    } catch (e) { return 'error:' + e.message; }
+                }
+            """)
+            log.info("JS API export: %s", r)
+        download = dl_info.value
+        download.save_as(dest)
+        log.info("Excel saved (JS API): %s", dest)
+        if emit_fn:
+            emit_fn(f"Excel saved: {filename}")
+        return str(dest)
+    except Exception as e:
+        log.warning("JS API export failed: %s — trying direct link click", e)
+
+    # Strategy 2: click the Excel link directly (menu is display:none but click still triggers onclick)
+    try:
+        with detail_page.expect_download(timeout=60_000) as dl_info:
+            r = detail_page.evaluate("""
+                () => {
+                    const link = document.querySelector('a[title="Excel"]');
+                    if (!link) return 'link-not-found';
+                    // Trigger both onclick handler AND the default click
+                    if (typeof link.onclick === 'function') {
+                        try { link.onclick(); return 'onclick-called'; } catch (e) {}
+                    }
+                    link.click();
+                    return 'link-clicked';
+                }
+            """)
+            log.info("Direct link click: %s", r)
+        download = dl_info.value
+        download.save_as(dest)
+        log.info("Excel saved (link click): %s", dest)
+        if emit_fn:
+            emit_fn(f"Excel saved: {filename}")
+        return str(dest)
+    except Exception as e2:
+        log.warning("Direct link click failed: %s — trying URL export", e2)
+
+    # Strategy 3: URL-based export
+    import re as _re
     if "rs:Format=" in current_url:
         export_url = _re.sub(r"rs:Format=[^&]+", "rs:Format=EXCELOPENXML", current_url)
     else:
         export_url = current_url + "&rs:Format=EXCELOPENXML"
 
-    log.info("Export URL: %s", export_url[:200])
-
-    try:
-        with detail_page.expect_download(timeout=90_000) as dl_info:
-            try:
-                detail_page.goto(export_url, wait_until="commit", timeout=60_000)
-            except Exception as ge:
-                log.warning("Export goto warning (non-fatal): %s", ge)
-
-        download = dl_info.value
-        download.save_as(dest)
-        log.info("Excel saved: %s", dest)
-        if emit_fn:
-            emit_fn(f"Excel saved: {filename}")
-        return str(dest)
-
-    except Exception as e:
-        log.warning("URL export failed (%s) — trying UI click fallback", e)
-
-    # Fallback: click the export dropdown → Excel in the SSRS toolbar
     try:
         with detail_page.expect_download(timeout=60_000) as dl_info:
-            # Re-navigate to detail page first (export URL may have changed it)
             try:
-                detail_page.goto(current_url, wait_until="domcontentloaded", timeout=30_000)
-                detail_page.wait_for_load_state("networkidle", timeout=30_000)
-            except Exception:
-                pass
-
-            # Click the save/export dropdown button
-            drop = detail_page.locator(
-                '#ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink'
-            ).first
-            drop.click(timeout=8_000)
-            detail_page.wait_for_timeout(200)
-            detail_page.locator('a[title="Excel"]').first.click(timeout=5_000)
-            log.info("Excel export via UI click")
-
+                detail_page.goto(export_url, wait_until="commit", timeout=45_000)
+            except Exception as ge:
+                log.warning("URL export goto warning: %s", ge)
         download = dl_info.value
         download.save_as(dest)
-        log.info("Excel saved (UI fallback): %s", dest)
+        log.info("Excel saved (URL export): %s", dest)
         if emit_fn:
             emit_fn(f"Excel saved: {filename}")
         return str(dest)
-
-    except Exception as e2:
-        log.warning("UI export fallback also failed: %s", e2)
+    except Exception as e3:
+        log.warning("All export strategies failed. Last error: %s", e3)
         if emit_fn:
-            emit_fn(f"Excel export failed for {entity}: {e2}")
+            emit_fn(f"Excel export failed for {entity}: {e3}")
         return None
 
 
