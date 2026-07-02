@@ -293,57 +293,46 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     log.info("Filter open: %s", open_filter)
     page.wait_for_timeout(2_500)
 
-    # ── Step 13: clear all entity selections via Select All × 2 ─────
-    # Pattern: click Select All once (selects everything), click again (deselects everything).
-    # This works regardless of the current mixed/checked/unchecked state.
-    page.wait_for_timeout(2_000)  # let dialog fully render
+    # ── Step 13: clear all entity selections ─────────────────────────
+    # Strategy: repeatedly uncheck every currently-checked md-checkbox
+    # (except "Select All") until none remain. More reliable than trying
+    # to find and click a Select All toggle, whose location varies.
+    page.wait_for_timeout(2_500)  # let dialog fully render
 
-    SELECT_ALL_JS = """
+    UNCHECK_ALL_JS = """
         () => {
-            // Search every visible element for "Select All" text
-            const candidates = Array.from(document.querySelectorAll(
-                'md-checkbox, li, button, a, div[role="checkbox"], ' +
-                'span[role="checkbox"], label, [ng-model*="selectAll"], ' +
-                '[aria-label*="Select All" i]'
-            )).filter(el => {
-                if (!el.offsetParent) return false;
-                const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim();
-                const lbl = (el.getAttribute('aria-label') || '').trim();
-                return txt.toLowerCase() === 'select all'
-                    || lbl.toLowerCase().includes('select all')
-                    || el.getAttribute('ng-model') === 'selectAll'
-                    || (el.getAttribute('ng-model') || '').includes('selectAll');
-            });
-            if (candidates.length === 0) return 'not-found';
-            const el = candidates[0];
-            el.scrollIntoView({block: 'center'});
-            el.click();
-            return 'clicked:' + el.tagName + '/' + (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0,30);
+            const items = Array.from(document.querySelectorAll('md-checkbox'))
+                .filter(cb => {
+                    if (!cb.offsetParent) return false;
+                    const ac = cb.getAttribute('aria-checked');
+                    const cls = cb.className || '';
+                    const isChecked = ac === 'true'
+                        || cls.includes('_md-checked')
+                        || cls.includes('md-checked');
+                    if (!isChecked) return false;
+                    const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
+                    const ng = (cb.getAttribute('ng-model') || '').toLowerCase();
+                    return !lbl.includes('select all') && !ng.includes('selectall');
+                });
+            items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
+            return items.map(cb =>
+                (cb.getAttribute('aria-label') || cb.textContent || '').trim().slice(0, 40)
+            );
         }
     """
 
-    log.info("Clearing via Select All ×2")
-    for click_n in range(1, 3):
-        r = ctx.evaluate(SELECT_ALL_JS)
-        log.info("Select All click %d: %s", click_n, r)
-        if r == "not-found" and click_n == 1:
-            log.warning("Select All not found — attempting fallback uncheck")
-            # Fallback: directly uncheck every checked item
-            n = ctx.evaluate("""
-                () => {
-                    const items = Array.from(document.querySelectorAll(
-                        'md-checkbox[aria-checked="true"], md-checkbox._md-checked'
-                    )).filter(cb => {
-                        const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
-                        return !lbl.includes('select all');
-                    });
-                    items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
-                    return items.length;
-                }
-            """)
-            log.info("Fallback uncheck: %s items", n)
+    log.info("Clearing existing entity selections (iterative uncheck)")
+    for attempt in range(1, 5):
+        try:
+            unchecked = ctx.evaluate(UNCHECK_ALL_JS)
+        except Exception as ue:
+            log.warning("Uncheck attempt %d failed: %s", attempt, ue)
+            unchecked = []
+        log.info("Uncheck attempt %d: %s items → %s",
+                 attempt, len(unchecked), unchecked[:5])
+        if not unchecked:
             break
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(800)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
