@@ -22,6 +22,20 @@ log = logging.getLogger(__name__)
 
 WRAP = Alignment(wrap_text=True, vertical="top")
 
+COLUMN_WIDTHS = {
+    "A": 22.0,
+    "B": 11.0,
+    "C": 14.0,
+    "D": 16.0,
+    "E": 14.0,
+    "F": 18.0,
+    "G": 24.0,
+    "H": 11.0,
+    "I": 11.0,
+    "J": 11.0,
+    "K": 13.0,
+}
+
 
 def _find_header_row(ws) -> int:
     """Locate the row that contains the column headers (Date, Type, ...)."""
@@ -94,6 +108,9 @@ def process_gl_workbook(src: str | Path, dest: str | Path | None = None) -> Path
     for row in ws.iter_rows():
         for cell in row:
             cell.alignment = WRAP
+
+    for letter, width in COLUMN_WIDTHS.items():
+        ws.column_dimensions[letter].width = width
 
     wb.save(dest)
     log.info("Processed GL saved: %s", dest)
