@@ -13,6 +13,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, Frame
 
 from .session import PROFILE_DIR, ensure_logged_in_r365
+from .gl_excel_processor import process_gl_workbook
 
 DOWNLOADS_DIR = Path(__file__).resolve().parent.parent / "downloads"
 
@@ -1560,6 +1561,7 @@ def open_report_viewer(
                 # The amount link has target="_blank" so it opens a NEW TAB.
                 # Listen for the new page before clicking.
                 excel_path: str | None = None
+                processed_path: str | None = None
                 detail_pages: list = []
                 _on_detail = lambda p: detail_pages.append(p)
                 browser.on("page", _on_detail)
@@ -1635,6 +1637,18 @@ def open_report_viewer(
                     _emit(f"Detail report ready for {entity}", after_snap)
                     log.info("Detail report final URL: %s", detail_page.url[:200])
                     log.info("Excel export path: %s", excel_path)
+
+                    # ── Post-process the downloaded xlsx (steps 1-5) ──────────
+                    processed_path = None
+                    if excel_path:
+                        try:
+                            _emit(f"Processing Excel for {entity}…")
+                            processed_path = str(process_gl_workbook(excel_path))
+                            _emit(f"Processed Excel saved: {Path(processed_path).name}")
+                            log.info("Processed Excel: %s", processed_path)
+                        except Exception as pe:
+                            log.warning("GL post-processing failed for %s: %s", entity, pe)
+                            _emit(f"Post-processing failed for {entity}: {pe}")
                 else:
                     fail_snap = _snap(viewer_page, "drilldown_missing")
                     log.warning("Drilldown FAILED (%s) for %r × %r", drill, entity, row_label)
@@ -1650,6 +1664,7 @@ def open_report_viewer(
                     "entity": entity,
                     "drilldown": drill,
                     "excel": excel_path if drill.startswith("clicked") else None,
+                    "processed_excel": processed_path if drill.startswith("clicked") else None,
                 })
                 if entity_cb:
                     try:
