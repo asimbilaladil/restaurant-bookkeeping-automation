@@ -1211,7 +1211,16 @@ def open_report_viewer(
                         log.warning("remove_listener failed (non-fatal): %s", e)
 
                 else:
-                    # Subsequent entities: click Customize on viewer_page, change entity, run
+                    # Subsequent entities: return to the Balance Sheet tab first,
+                    # then open Customize and change the entity filter.
+                    log.info("Bringing viewer_page to front for entity %r", entity)
+                    try:
+                        viewer_page.bring_to_front()
+                    except Exception:
+                        pass
+                    viewer_page.wait_for_timeout(1_000)
+
+                    # Click Customize
                     log.info("Clicking Customize on ReportViewer for entity %r", entity)
                     cust_clicked = False
                     try:
@@ -1224,7 +1233,6 @@ def open_report_viewer(
                         log.warning("Customize ng-click selector failed: %s", ce)
 
                     if not cust_clicked:
-                        # Fallback: find by button text
                         try:
                             cust_result = viewer_page.evaluate("""
                                 () => {
@@ -1241,9 +1249,10 @@ def open_report_viewer(
 
                     viewer_page.wait_for_timeout(2_000)
 
-                    # On viewer_page the Filter parameter is an md-autocomplete,
-                    # not a modal dialog — use the autocomplete selection path.
-                    _select_entity_via_autocomplete(viewer_page, entity)
+                    # Change the Filter (Legal Entity) using the modal multi-select dialog.
+                    # On the viewer page, skip_filter_type=True because Filter By is
+                    # already "Legal Entity" from the first run.
+                    _select_legal_entity(viewer_page, viewer_page, entity, skip_filter_type=True)
                     _emit(f"Legal entity '{entity}' selected", _snap(viewer_page, "entity_ok"))
 
                     # Click Run on viewer_page
@@ -1251,7 +1260,6 @@ def open_report_viewer(
                     run_result = viewer_page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
                     log.info("Run button (viewer_page): %s", run_result)
                     if "run-not-found" in (run_result or ""):
-                        # Try frames within viewer_page
                         for _flabel, _fc in _contexts(viewer_page):
                             try:
                                 run_result = _fc.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
@@ -1270,77 +1278,33 @@ def open_report_viewer(
                 rv_loaded_snap = _snap(viewer_page, "report_viewer_loaded")
                 _emit("Opened ReportViewer — waiting for report render…", rv_loaded_snap)
                 log.info("ReportViewer URL after RUN: %s", viewer_page.url)
-                log.info("ReportViewer frames: %s",
-                         [f.url[:80] for f in viewer_page.frames])
 
-                # ── Wait for the Side-by-Side BS to finish rendering ──────────
+                # ── Wait for the row_label row to appear in the SSRS iframe ──
                 render_deadline = time.time() + 90
                 row_ready = False
                 while time.time() < render_deadline:
                     for _lbl, _c in _contexts(viewer_page):
                         try:
                             present = _c.evaluate("""
-                                (label) => {
-                                    return Array.from(document.querySelectorAll('*'))
-                                        .some(e => e.offsetParent !== null
-                                                && e.children.length === 0
-                                                && (e.textContent||'').trim().endsWith(label));
-                                }
+                                (label) => Array.from(document.querySelectorAll('*'))
+                                    .some(e => e.offsetParent !== null
+                                            && e.children.length === 0
+                                            && (e.textContent||'').trim().endsWith(label))
                             """, row_label)
                             if present:
-                                log.info("Row %r found in context [%s]", row_label, _lbl)
+                                log.info("Row %r found in [%s]", row_label, _lbl)
                                 row_ready = True
                                 break
                         except Exception:
                             continue
                     if row_ready:
                         break
-                    elapsed = 90 - int(render_deadline - time.time())
-                    if elapsed % 10 == 0:
-                        log.info("Still waiting for %r row (%ds elapsed)…", row_label, elapsed)
-                        # Every 10s dump visible text snippets from all contexts to see what's rendered
-                        for _lbl, _c in _contexts(viewer_page):
-                            try:
-                                snippets = _c.evaluate("""
-                                    () => Array.from(document.querySelectorAll('*'))
-                                        .filter(e => e.offsetParent !== null && e.children.length === 0
-                                                  && (e.textContent||'').trim().length > 1
-                                                  && (e.textContent||'').trim().length < 80)
-                                        .map(e => (e.textContent||'').trim())
-                                        .filter((v,i,a) => a.indexOf(v) === i)
-                                        .slice(0, 60)
-                                """)
-                                log.info("Visible text in [%s]: %s", _lbl, snippets)
-                            except Exception as _de:
-                                log.info("Text dump failed for [%s]: %s", _lbl, _de)
                     viewer_page.wait_for_timeout(1_000)
 
-                # Screenshot + DOM dump right before attempting drilldown
                 pre_snap = _snap(viewer_page, "before_drilldown")
-                log.info("Before-drilldown screenshot: %s", pre_snap)
-
-                # Dump all frames and visible text to logs
-                log.info("Frames at drilldown time: %s",
-                         [(f.url or "<blank>")[:80] for f in viewer_page.frames])
-                for _lbl, _c in _contexts(viewer_page):
-                    try:
-                        snippets = _c.evaluate("""
-                            () => Array.from(document.querySelectorAll('*'))
-                                .filter(e => e.offsetParent !== null && e.children.length === 0
-                                          && (e.textContent||'').trim().length > 1
-                                          && (e.textContent||'').trim().length < 80)
-                                .map(e => (e.textContent||'').trim())
-                                .filter((v,i,a) => a.indexOf(v) === i)
-                                .slice(0, 80)
-                        """)
-                        log.info("DOM text in [%s]: %s", _lbl, snippets)
-                    except Exception as _de:
-                        log.info("DOM dump failed [%s]: %s", _lbl, _de)
-
                 if not row_ready:
-                    log.warning("%r row never appeared within 90s — attempting drilldown anyway", row_label)
-                    _emit(f"WARNING: {row_label!r} row not found after 90s — trying click anyway",
-                          pre_snap)
+                    log.warning("%r row not found within 90s — trying drilldown anyway", row_label)
+                    _emit(f"WARNING: {row_label!r} not found after 90s", pre_snap)
                 else:
                     _emit(f"Found {row_label!r} — drilling into {entity}…", pre_snap)
 
