@@ -1,8 +1,6 @@
 """
-Navigate R365: My Reports → Accounting tab → GL Account Detail Export Customize
-→ set Account to the selected receivable account (default 1245-12 A/R-UberEats;
-caller picks one of UberEats / DoorDash / GrubHub / EzCater / Lunchdrop / Fooda /
-Event / Credit Cards / Undeposited Funds / Square).
+Navigate R365: My Reports → Accounting tab → Balance Sheet → Customize
+→ set entity filter, date, and other options, then run and export.
 """
 
 import json
@@ -21,7 +19,7 @@ DOWNLOADS_DIR = Path(__file__).resolve().parent.parent / "downloads"
 log = logging.getLogger(__name__)
 
 MY_REPORTS_URL = "https://ayg.restaurant365.com/react/reports-management/legacy/MyReports"
-TARGET_REPORT  = "GL Account Detail Export"
+TARGET_REPORT  = "Balance Sheet"
 BTN_ID         = f"customizeViewer-{TARGET_REPORT}"
 
 
@@ -118,84 +116,232 @@ def _snap(page, prefix: str) -> str:
     return name
 
 
-def _select_legal_entity(ctx, page, entity: str) -> None:
-    """Open Legal Entity filter dialog, clear existing selections, select entity, confirm OK."""
+def _select_entity_via_autocomplete(viewer_page, entity: str) -> None:
+    """Change the Legal Entity filter on the ReportViewer customize panel.
 
-    # ── Step 12: open Legal Entity filter on Customize panel ─────────
-    # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
-    # → "Legal Entity" option (the option uses ng-click=wantedItem
-    # without the `true` flag, so it's a single-select).
-    log.info("Opening Legal Entity filter")
-    fbtn = ctx.evaluate("""
+    The ReportViewer uses an md-autocomplete (not a modal dialog) for the
+    Filter parameter. We click the autocomplete input, clear it, type the
+    entity name, wait for the dropdown, then click the matching option.
+    """
+    log.info("Selecting entity %r via autocomplete", entity)
+
+    # Click the Filter autocomplete input — the label "Filter" (not "Filter By")
+    # lives in a div[style*="min-width"] left-side label column.
+    click_result = viewer_page.evaluate("""
         () => {
-            const btns = Array.from(document.querySelectorAll('button'))
-                .filter(b => b.offsetParent !== null);
-            let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
-            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
-            target = btns.find(b => {
-                const t = b.textContent.trim().toUpperCase();
-                return t === 'FILTER BY' || t.startsWith('FILTER BY');
-            });
-            if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
-            return 'not-found';
+            // Find the Filter label (not Filter By) to locate the right row
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterLabel = spans.find(s =>
+                s.textContent.trim() === 'Filter' &&
+                s.closest('div[style*="min-width"]')
+            );
+            if (!filterLabel) return 'label-not-found';
+            let node = filterLabel;
+            for (let i = 0; i < 10; i++) {
+                node = node.parentElement;
+                if (!node) break;
+                if (node.tagName === 'SECTION') {
+                    const inp = node.querySelector('input[type="search"]');
+                    if (inp) {
+                        inp.click();
+                        inp.select();
+                        return 'input-clicked:' + inp.id;
+                    }
+                }
+            }
+            return 'input-not-found';
         }
     """)
-    log.info("Filter button: %s", fbtn)
-    page.wait_for_timeout(2_000)
+    log.info("Filter autocomplete click: %s", click_result)
+    viewer_page.wait_for_timeout(500)
 
-    if fbtn == "filter-by-clicked":
-        log.info("Clicking 'Legal Entity' option")
-        le = ctx.evaluate("""
+    # Clear the current value and type the new entity
+    try:
+        inp = viewer_page.locator('input[type="search"]').nth(3)  # input-4 = 4th search input
+        inp.click(timeout=3_000)
+        inp.select_text()
+        inp.fill("")
+        inp.type(entity, delay=60)
+        log.info("Typed %r into filter autocomplete", entity)
+    except Exception as e:
+        log.warning("Autocomplete locator failed (%s) — keyboard fallback", e)
+        viewer_page.keyboard.select_all()
+        viewer_page.keyboard.type(entity, delay=60)
+    viewer_page.wait_for_timeout(2_000)
+
+    # Click the matching item in the autocomplete dropdown
+    select_result = viewer_page.evaluate(f"""
+        () => {{
+            const label = {repr(entity)};
+            // md-autocomplete dropdown items
+            const candidates = [
+                ...document.querySelectorAll('li[md-autocomplete-list-item], md-autocomplete-parent-scope li'),
+                ...document.querySelectorAll('ul[role="presentation"] li'),
+            ];
+            const match = candidates.find(li => li.textContent.trim().includes(label));
+            if (match) {{ match.click(); return 'dropdown-item-clicked: ' + match.textContent.trim().slice(0,50); }}
+            // Broader fallback: any visible li containing the entity text
+            const anyLi = Array.from(document.querySelectorAll('li')).find(li =>
+                li.offsetParent !== null && li.textContent.trim().includes(label)
+            );
+            if (anyLi) {{ anyLi.click(); return 'li-fallback: ' + anyLi.textContent.trim().slice(0,50); }}
+            return 'not-found';
+        }}
+    """)
+    log.info("Entity autocomplete select (%s): %s", entity, select_result)
+    viewer_page.wait_for_timeout(1_500)
+
+    # Verify the filter input now shows the selected entity
+    verify = viewer_page.evaluate(f"""
+        () => {{
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterLabel = spans.find(s =>
+                s.textContent.trim() === 'Filter' &&
+                s.closest('div[style*="min-width"]')
+            );
+            if (!filterLabel) return 'label-not-found';
+            let node = filterLabel;
+            for (let i = 0; i < 10; i++) {{
+                node = node.parentElement;
+                if (!node) break;
+                if (node.tagName === 'SECTION') {{
+                    const inp = node.querySelector('input[type="search"]');
+                    return inp ? 'filter-value: ' + inp.value : 'input-not-found';
+                }}
+            }}
+            return 'section-not-found';
+        }}
+    """)
+    log.info("Filter value after select: %s", verify)
+
+
+def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False) -> None:
+    """Open Legal Entity filter dialog, clear existing selections, select entity, confirm OK.
+
+    skip_filter_type: set True when Filter By is already set to 'Legal Entity'
+    (e.g. subsequent entities on the ReportViewer page) so we don't re-click
+    FILTER BY, which would reset the current filter value to empty.
+    """
+
+    if not skip_filter_type:
+        # ── Step 12: open Legal Entity filter on Customize panel ─────────
+        # Try direct "LEGAL ENTITY" button first; fall back to "FILTER BY"
+        log.info("Opening Legal Entity filter")
+        fbtn = ctx.evaluate("""
             () => {
-                const btn = document.querySelector('button[aria-label="Legal Entity"]');
-                if (!btn) return 'not-found';
-                btn.scrollIntoView({block:'center'});
-                btn.click();
-                return 'legal-entity-clicked';
+                const btns = Array.from(document.querySelectorAll('button'))
+                    .filter(b => b.offsetParent !== null);
+                let target = btns.find(b => b.textContent.trim().toUpperCase() === 'LEGAL ENTITY');
+                if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'legal-entity-direct'; }
+                target = btns.find(b => {
+                    const t = b.textContent.trim().toUpperCase();
+                    return t === 'FILTER BY' || t.startsWith('FILTER BY');
+                });
+                if (target) { target.scrollIntoView({block:'center'}); target.click(); return 'filter-by-clicked'; }
+                return 'not-found';
             }
         """)
-        log.info("Legal Entity option: %s", le)
-        page.wait_for_timeout(2_500)
+        log.info("Filter button: %s", fbtn)
+        page.wait_for_timeout(2_000)
+
+        if fbtn == "filter-by-clicked":
+            log.info("Clicking 'Legal Entity' option")
+            le = ctx.evaluate("""
+                () => {
+                    const btn = document.querySelector('button[aria-label="Legal Entity"]');
+                    if (!btn) return 'not-found';
+                    btn.scrollIntoView({block:'center'});
+                    btn.click();
+                    return 'legal-entity-clicked';
+                }
+            """)
+            log.info("Legal Entity option: %s", le)
+            page.wait_for_timeout(2_500)
+    else:
+        log.info("Skipping Filter By step (already set to Legal Entity on viewer page)")
 
     # ── Step 12c: open the FILTER multi-select dialog ─────────────────
-    # Filter By only SETS the filter type; the actual entity selection
-    # lives behind a separate "Filter" dropdown (id="Filter" on the
-    # Customize panel). We must click it to open the entity dialog.
     log.info("Opening Filter (entity multi-select) dialog")
     open_filter = ctx.evaluate("""
         () => {
-            // Click the button inside the Filter parameter row
+            // Try by id first
             const filterRow = document.getElementById('Filter');
             if (filterRow) {
                 const btn = filterRow.querySelector('button');
-                if (btn) {
-                    btn.scrollIntoView({block:'center'});
-                    btn.click();
-                    return 'filter-button-clicked';
-                }
-                // Section fallback (parameterMenuClick)
+                if (btn) { btn.scrollIntoView({block:'center'}); btn.click(); return 'by-id'; }
                 const section = filterRow.querySelector('section[role="button"]');
-                if (section) { section.click(); return 'filter-section-clicked'; }
+                if (section) { section.scrollIntoView({block:'center'}); section.click(); return 'by-id-section'; }
             }
-            return 'filter-not-found';
+            // Find the "Filter" label (not "Filter By") via spanTop and walk up
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterSpan = spans.find(s => s.textContent.trim() === 'Filter');
+            if (filterSpan) {
+                let node = filterSpan;
+                for (let i = 0; i < 12; i++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    // Click the section[role=button] or button in this row
+                    const sect = node.querySelector('section[role="button"]');
+                    if (sect) { sect.scrollIntoView({block:'center'}); sect.click(); return 'span-section'; }
+                    const btn2 = node.querySelector('button');
+                    if (btn2) { btn2.scrollIntoView({block:'center'}); btn2.click(); return 'span-btn:' + (btn2.textContent||'').trim().slice(0,30); }
+                }
+            }
+            return 'not-found';
         }
     """)
     log.info("Filter open: %s", open_filter)
     page.wait_for_timeout(2_500)
 
     # ── Step 13: clear any existing legal entity selections ──────────
-    log.info("Clearing legal entity selections (Select All x2)")
-    for i in (1, 2):
-        res = ctx.evaluate("""
+    log.info("Clearing legal entity selections")
+    cleared = False
+    # Try "Select All" checkbox via several attribute selectors
+    for sel in [
+        'md-checkbox[ng-model="selectAll"]',
+        'md-checkbox[ng-model*="selectAll"]',
+        'md-checkbox[aria-label="Select All"]',
+        'md-checkbox[aria-label*="select all" i]',
+    ]:
+        for i in range(1, 5):
+            page.wait_for_timeout(500)
+            state = ctx.evaluate(f"""
+                () => {{
+                    const sa = document.querySelector({repr(sel)});
+                    return sa ? sa.getAttribute('aria-checked') : 'not-found';
+                }}
+            """)
+            log.info("Select All (%s) state %d: %s", sel, i, state)
+            if state == "false":
+                log.info("All deselected via Select All")
+                cleared = True
+                break
+            if state == "not-found":
+                break
+            ctx.evaluate(f"""
+                () => {{
+                    const sa = document.querySelector({repr(sel)});
+                    if (!sa) return;
+                    sa.scrollIntoView({{block:'center'}});
+                    sa.click();
+                }}
+            """)
+            page.wait_for_timeout(1_200)
+        if cleared:
+            break
+
+    if not cleared:
+        # Fallback: individually uncheck every currently-checked md-checkbox
+        n = ctx.evaluate("""
             () => {
-                const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
-                if (!sa) return 'select-all-not-found';
-                sa.scrollIntoView({block:'center'});
-                sa.click();
-                return 'select-all-clicked aria-checked=' + sa.getAttribute('aria-checked');
+                const checked = Array.from(
+                    document.querySelectorAll('md-checkbox[aria-checked="true"]')
+                );
+                checked.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
+                return checked.length;
             }
         """)
-        log.info("Entity Select All click %d: %s", i, res)
+        log.info("Fallback: individually unchecked %s items", n)
         page.wait_for_timeout(1_000)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
@@ -254,7 +400,370 @@ def _select_legal_entity(ctx, page, entity: str) -> None:
     page.wait_for_timeout(2_000)
 
 
-DEFAULT_ACCOUNT = "1245-12 - A/R-UberEats"
+def _set_report_type_bs(ctx, page, option: str = "Legal Entity Side by Side") -> str:
+    """Click the REPORT TYPE dropdown next to the 'Report Type' label and select option."""
+    # Step 1: find the "Report Type" label row and click the clickable element in it
+    open_result = ctx.evaluate("""
+        () => {
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const label = spans.find(s => s.textContent.trim() === 'Report Type');
+            if (!label) return 'label-not-found';
+            // Walk up to find the row container, then find the clickable trigger
+            let node = label;
+            for (let i = 0; i < 12; i++) {
+                node = node.parentElement;
+                if (!node) break;
+                // Look for the dropdown trigger — button, section[role=button], or md-select
+                const trigger = node.querySelector(
+                    'button, section[role="button"], md-select, [role="combobox"]'
+                );
+                if (trigger) {
+                    trigger.scrollIntoView({block:'center'});
+                    trigger.click();
+                    return 'opened:' + trigger.tagName + '/' + (trigger.textContent||'').trim().slice(0,40);
+                }
+            }
+            return 'trigger-not-found';
+        }
+    """)
+    log.info("Report Type dropdown open: %s", open_result)
+    if "not-found" in open_result:
+        return f"report-type-{open_result}"
+
+    page.wait_for_timeout(1_500)
+
+    # Step 2: the Report Type trigger opens an md-dialog modal containing
+    # options laid out as rows inside md-virtual-repeat-container. The text
+    # itself is a DIV leaf with no click handler — ng-click lives on the
+    # wrapper button (which has aria-label=optionText). Pattern mirrors
+    # _select_legal_entity. Try button[aria-label] first, then walk up
+    # from the matching text leaf to find a clickable ancestor.
+    pick = ctx.evaluate(f"""
+        (option) => {{
+            // Find the open md-dialog. There may be multiple in the DOM —
+            // pick the visible one whose title is 'Report Type'.
+            const dialogs = Array.from(document.querySelectorAll('md-dialog'))
+                .filter(d => d.offsetParent !== null);
+            let dialog = dialogs.find(d => {{
+                const titles = Array.from(d.querySelectorAll('h1,h2,h3,h4,h5,.md-title,.md-toolbar-tools'));
+                return titles.some(t => (t.textContent||'').trim().startsWith('Report Type'));
+            }}) || dialogs[dialogs.length - 1] || null;
+            if (!dialog) return 'no-dialog';
+
+            // Preferred: wrapper button with aria-label exactly matching option
+            const btn = dialog.querySelector('button[aria-label="' + option + '"]');
+            if (btn) {{
+                btn.scrollIntoView({{block:'center'}});
+                btn.click();
+                return 'aria-btn';
+            }}
+
+            // Fallback: find text leaf inside dialog and walk to clickable ancestor
+            const leaves = Array.from(dialog.querySelectorAll('*'))
+                .filter(e => e.offsetParent !== null && e.children.length === 0);
+            const leaf = leaves.find(e => (e.textContent||'').trim() === option)
+                       || leaves.find(e => (e.textContent||'').trim().includes(option));
+            if (leaf) {{
+                let cur = leaf;
+                for (let i = 0; i < 10 && cur; i++) {{
+                    if (cur === dialog) break;
+                    const tag = cur.tagName;
+                    if (tag === 'BUTTON' || tag === 'A' || tag === 'MD-OPTION'
+                        || tag === 'MD-MENU-ITEM' || tag === 'MD-LIST-ITEM') {{
+                        cur.scrollIntoView({{block:'center'}});
+                        cur.click();
+                        return 'walked:' + tag;
+                    }}
+                    if (cur.getAttribute) {{
+                        if (cur.getAttribute('ng-click')) {{
+                            cur.scrollIntoView({{block:'center'}});
+                            cur.click();
+                            return 'ng-click:' + tag;
+                        }}
+                        const role = cur.getAttribute('role');
+                        if (role === 'option' || role === 'menuitem' || role === 'button') {{
+                            cur.scrollIntoView({{block:'center'}});
+                            cur.click();
+                            return 'role-' + role + ':' + tag;
+                        }}
+                    }}
+                    cur = cur.parentElement;
+                }}
+                // Last resort: click the leaf itself
+                leaf.scrollIntoView({{block:'center'}});
+                leaf.click();
+                return 'leaf-click:' + leaf.tagName;
+            }}
+
+            // Debug: list options inside dialog
+            const items = leaves.map(e => (e.textContent||'').trim())
+                .filter(Boolean).slice(0, 30);
+            return 'not-found|leaves:' + items.join(' | ');
+        }}
+    """, option)
+    log.info("Report Type option pick: %s", pick)
+    page.wait_for_timeout(1_500)
+
+    # Some R365 modal pickers require an explicit OK click to confirm even
+    # after the option row is clicked. If the dialog is still open, click OK.
+    ok_result = ctx.evaluate("""
+        () => {
+            const dialogs = Array.from(document.querySelectorAll('md-dialog'))
+                .filter(d => d.offsetParent !== null);
+            if (dialogs.length === 0) return 'closed';
+            const dialog = dialogs[dialogs.length - 1];
+            const ok = dialog.querySelector("button[ng-click=\\"closeDialog('OK')\\"]");
+            if (ok) { ok.click(); return 'ok-clicked'; }
+            const actions = dialog.querySelector('md-dialog-actions');
+            if (actions) {
+                const btn = Array.from(actions.querySelectorAll('button'))
+                    .find(b => b.textContent.trim().toUpperCase() === 'OK');
+                if (btn) { btn.click(); return 'ok-actions'; }
+            }
+            return 'still-open-no-ok';
+        }
+    """)
+    log.info("Report Type dialog after pick: %s", ok_result)
+    page.wait_for_timeout(800)
+    return pick
+
+
+def _set_as_of_date(ctx, page, date_str: str) -> str:
+    """Set the As Of date field on the Balance Sheet customize panel."""
+    # Try md-datepicker-input with placeholder variations
+    for placeholder in ("As Of", "as of", "Date", ""):
+        try:
+            sel = f'input.md-datepicker-input[placeholder="{placeholder}"]' if placeholder else "input.md-datepicker-input"
+            inp = ctx.locator(sel).first
+            if inp.count() > 0:
+                inp.click(timeout=4_000)
+                inp.select_text()
+                inp.type(date_str, delay=50)
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(600)
+                log.info("As Of date set via placeholder=%r: %s", placeholder, date_str)
+                return f"set:{date_str}"
+        except Exception:
+            pass
+
+    # JS fallback: find As Of label row and set the date input
+    result = ctx.evaluate(f"""
+        (dateStr) => {{
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const label = spans.find(s => s.textContent.trim() === 'As Of');
+            if (!label) return 'label-not-found';
+            let node = label;
+            for (let i = 0; i < 10; i++) {{
+                node = node.parentElement;
+                if (!node) break;
+                const inp = node.querySelector('input.md-datepicker-input, input[type="text"]');
+                if (inp) {{
+                    inp.focus();
+                    inp.select();
+                    inp.value = dateStr;
+                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return 'js-set:' + dateStr;
+                }}
+            }}
+            return 'input-not-found';
+        }}
+    """, date_str)
+    log.info("As Of date JS result: %s", result)
+    return result
+
+
+def _select_filter_entity(ctx, page, entity: str) -> str:
+    """
+    Set the Filter (entity) autocomplete field on the Balance Sheet customize panel.
+    Works on the initial My Reports customize panel (ctx) and the ReportViewer panel.
+    """
+    log.info("Setting Filter entity to %r", entity)
+
+    # Click the FILTER button / input to open the dropdown
+    open_result = ctx.evaluate("""
+        () => {
+            const spans = Array.from(document.querySelectorAll('span.spanTop'));
+            const filterLabel = spans.find(s => s.textContent.trim() === 'Filter');
+            if (!filterLabel) return 'label-not-found';
+            let node = filterLabel;
+            for (let i = 0; i < 10; i++) {
+                node = node.parentElement;
+                if (!node) break;
+                // Click input[type="search"] directly
+                const inp = node.querySelector('input[type="search"]');
+                if (inp) { inp.click(); return 'input-clicked:' + inp.id; }
+                // Or click section[role="button"]
+                if (node.tagName === 'SECTION' && node.getAttribute('role') === 'button') {
+                    node.click(); return 'section-clicked';
+                }
+            }
+            // Fallback: click any visible FILTER button (not FILTER BY)
+            const btns = Array.from(document.querySelectorAll('button'));
+            const btn = btns.find(b => {
+                const t = b.textContent.trim().toUpperCase();
+                return (t === 'FILTER' || t.startsWith('FILTER ')) && !t.includes('BY');
+            });
+            if (btn) { btn.click(); return 'filter-btn-clicked'; }
+            return 'not-found';
+        }
+    """)
+    log.info("Filter open: %s", open_result)
+    page.wait_for_timeout(600)
+
+    # Type the entity name into the search input
+    try:
+        inp = ctx.locator('input[type="search"]').last
+        inp.click(timeout=3_000)
+        inp.select_text()
+        inp.fill("")
+        inp.type(entity, delay=60)
+    except Exception as e:
+        log.warning("Filter input type failed (%s) — keyboard fallback", e)
+        page.keyboard.select_all()
+        page.keyboard.type(entity, delay=60)
+    page.wait_for_timeout(2_000)
+
+    # Click matching autocomplete dropdown item
+    pick = ctx.evaluate(f"""
+        () => {{
+            const needle = {repr(entity)};
+            const candidates = [
+                ...document.querySelectorAll('li[md-autocomplete-list-item]'),
+                ...document.querySelectorAll('md-autocomplete-parent-scope li'),
+                ...document.querySelectorAll('ul[role="presentation"] li'),
+            ];
+            const match = candidates.find(li => li.textContent.trim().includes(needle));
+            if (match) {{ match.click(); return 'picked:' + match.textContent.trim().slice(0,60); }}
+            const anyLi = Array.from(document.querySelectorAll('li'))
+                .find(li => li.offsetParent !== null && li.textContent.trim().includes(needle));
+            if (anyLi) {{ anyLi.click(); return 'li-fallback:' + anyLi.textContent.trim().slice(0,60); }}
+            return 'not-found';
+        }}
+    """)
+    log.info("Filter entity pick: %s", pick)
+    page.wait_for_timeout(1_500)
+    return pick
+
+
+def _click_drilldown_amount(viewer_page, entity: str, row_label: str = "A/R-UberEats") -> str:
+    """
+    Inside the SSRS iframe, find the <tr> whose first cell contains row_label,
+    then click the <a> link in that row (the drilldown opens target=_blank).
+    Returns 'clicked:<amount>' on success or 'not-found' / diagnostic string.
+    """
+    log.info("Drilling into %r × %r", entity, row_label)
+
+    contexts = [("page", viewer_page)]
+    for f in viewer_page.frames:
+        if f is not viewer_page.main_frame:
+            contexts.append(((f.url or "<blank>")[:80], f))
+
+    js = f"""
+        () => {{
+            const rowLabel = {repr(row_label)};
+
+            // Find the <tr> whose text starts with the row label
+            const rows = Array.from(document.querySelectorAll('tr'));
+            const targetRow = rows.find(r => {{
+                const txt = (r.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+                return txt.startsWith(rowLabel);
+            }});
+
+            if (!targetRow) {{
+                // Fallback: any element whose text IS the row label
+                const anyEl = Array.from(document.querySelectorAll('span,div,td'))
+                    .find(e => (e.textContent||'').trim() === rowLabel);
+                if (!anyEl) return 'row-not-found';
+                // Walk up to the row, then find the <a> in it
+                let node = anyEl;
+                for (let i = 0; i < 10 && node; i++) {{
+                    if (node.tagName === 'TR') {{
+                        const link = node.querySelector('a[href]');
+                        if (link) {{
+                            link.scrollIntoView({{block:'center'}});
+                            link.click();
+                            return 'clicked-walkup:' + (link.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40);
+                        }}
+                        return 'row-found-no-link-in-walkup';
+                    }}
+                    node = node.parentElement;
+                }}
+                return 'walkup-exhausted';
+            }}
+
+            // Find all <a href> links in this row with non-empty text
+            const links = Array.from(targetRow.querySelectorAll('a[href]'))
+                .filter(a => (a.textContent||'').replace(/\\u00a0/g,'').trim().length > 0);
+
+            if (links.length === 0) return 'row-found-no-links';
+
+            // If multiple columns, prefer the link whose URL contains the entity GUID or whose
+            // column header matches. For now: if only 1 link, click it directly.
+            // If >1 links, try to find one associated with the entity column header.
+            let chosen = links[0];
+            if (links.length > 1) {{
+                // Walk up from each link to find column index, then match with header
+                const allRows = Array.from(document.querySelectorAll('tr'));
+                const headerRow = allRows.find(r => (r.textContent||'').includes({repr(entity)}));
+                if (headerRow) {{
+                    const hcells = Array.from(headerRow.querySelectorAll('td,th'));
+                    const entityIdx = hcells.findIndex(c => (c.textContent||'').trim().includes({repr(entity)}));
+                    if (entityIdx >= 0) {{
+                        const dcells = Array.from(targetRow.querySelectorAll('td,th'));
+                        const cell = dcells[entityIdx];
+                        if (cell) {{
+                            const cellLink = cell.querySelector('a[href]');
+                            if (cellLink) chosen = cellLink;
+                        }}
+                    }}
+                }}
+            }}
+
+            chosen.scrollIntoView({{block:'center'}});
+            chosen.click();
+            return 'clicked:' + (chosen.textContent||'').replace(/\\u00a0/g,'').replace(/\\s+/g,' ').trim().slice(0,40);
+        }}
+    """
+
+    for label, c in contexts:
+        try:
+            result = c.evaluate(js)
+            log.info("Drilldown probe [%s]: %s", label, result)
+            if result and result.startswith("clicked"):
+                log.info("Drilldown click succeeded in [%s]: %s", label, result)
+                return result
+        except Exception as e:
+            log.info("Drilldown JS error [%s]: %s", label, e)
+
+    # Nothing clicked — dump diagnostic info
+    log.warning("Drilldown: no click succeeded. Dumping diagnostics…")
+    for label, c in contexts:
+        try:
+            dump = c.evaluate(f"""
+                () => {{
+                    const rowLabel = {repr(row_label)};
+                    const rows = Array.from(document.querySelectorAll('tr'));
+                    const matching = rows.filter(r =>
+                        (r.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim().startsWith(rowLabel)
+                    ).map(r => (r.textContent||'').replace(/\\s+/g,' ').trim().slice(0,120));
+                    const allLinks = Array.from(document.querySelectorAll('a[href]'))
+                        .filter(a => (a.textContent||'').replace(/\\u00a0/g,'').trim().length > 0)
+                        .map(a => (a.textContent||'').trim().slice(0,40));
+                    const sampleText = Array.from(document.querySelectorAll('span,td,div'))
+                        .filter(e => {{const t=(e.textContent||'').trim(); return t.length>1 && t.length<60;}})
+                        .map(e => (e.textContent||'').trim())
+                        .filter((v,i,a) => a.indexOf(v)===i)
+                        .slice(0,60);
+                    return {{ matchingRows: matching, allLinks: allLinks.slice(0,20), sampleText: sampleText.slice(0,40) }};
+                }}
+            """)
+            log.warning("Drilldown debug [%s]: matchingRows=%s links=%s sample=%s",
+                        label, dump.get("matchingRows"), dump.get("allLinks"), dump.get("sampleText"))
+        except Exception as de:
+            log.warning("Drilldown debug dump failed [%s]: %s", label, de)
+
+    return "not-found"
 
 
 def open_report_viewer(
@@ -272,9 +781,6 @@ def open_report_viewer(
         legal_entities = [legal_entities]
     if not legal_entities:
         legal_entities = ["LCF Airtex LLC"]
-
-    # Receivable account to select in the picker (default: UberEats)
-    account = (account or "").strip() or DEFAULT_ACCOUNT
 
     def _emit(message: str, screenshot: str = ""):
         log.info("[rv] %s", message)
@@ -457,9 +963,9 @@ def open_report_viewer(
                 dbg = _snap(page, "debug")
                 return {"error": "Customize button never appeared", "screenshot_filename": dbg}
 
-            _emit("GL Account Detail Export dialog opened — configuring filters…")
+            _emit("Balance Sheet Customize open — configuring options…")
 
-            # ── Step 5: click Accounting tab if GL Account Detail Export not yet visible ──
+            # ── Step 5: click Accounting tab if Balance Sheet not yet visible ──
             # Try to click Customize for GL Account Detail Export directly first.
             # Only fall back to Accounting tab if it's not on the current view.
             log.info("Attempting to click Customize for '%s'", TARGET_REPORT)
@@ -523,7 +1029,8 @@ def open_report_viewer(
                 log.info("Waiting for Customize after Accounting tab switch…")
                 for i in range(30):
                     page.wait_for_timeout(1_000)
-                    ctx = _get_legacy_frame(page) or page
+                    found_ctx, _ = _find_customize_ctx(page)
+                    ctx = found_ctx or page
                     try:
                         present = ctx.evaluate(f"""
                             () => {{
@@ -570,175 +1077,49 @@ def open_report_viewer(
                 return {"error": "Customize click failed", "screenshot_filename": dbg}
             page.wait_for_timeout(3_000)
 
-            # ── Step 8: click ACCOUNT button (not ACCOUNTS AVAILABLE) ─────────
-            log.info("Clicking ACCOUNT button")
-            acct = ctx.evaluate("""
-                () => {
-                    const btn = Array.from(document.querySelectorAll('button')).find(b => {
-                        const t = b.textContent.trim().toUpperCase();
-                        return t === 'ACCOUNT' ||
-                               (t.includes('ACCOUNT') && !t.includes('ACCOUNTS') && !t.includes('AVAILABLE'));
-                    });
-                    if (!btn) return 'not-found';
-                    btn.scrollIntoView();
-                    btn.click();
-                    return 'clicked: ' + btn.textContent.trim();
-                }
-            """)
-            log.info("ACCOUNT btn: %s", acct)
-            page.wait_for_timeout(3_000)
+            # ── Derive row label from account string ─────────────────────────
+            # e.g. "1245-12 - A/R-UberEats" → "A/R-UberEats"
+            row_label = "A/R-UberEats"
+            if account:
+                parts = account.split(" - ", 1)
+                if len(parts) == 2:
+                    row_label = parts[1].strip()
+            log.info("Drilldown row label: %r (account=%r)", row_label, account)
 
-            # ── Step 8.5: clear all selections via Select All toggle ─────────
-            # Click Select All twice: first click selects everything, second
-            # click deselects everything. This always ends at "nothing selected"
-            # regardless of the initial state (none / partial / all selected).
-            log.info("Clearing selections: clicking Select All twice")
-            for i in (1, 2):
-                res = ctx.evaluate("""
-                    () => {
-                        const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
-                        if (!sa) return 'select-all-not-found';
-                        sa.scrollIntoView({block:'center'});
-                        sa.click();
-                        return 'select-all-clicked aria-checked=' + sa.getAttribute('aria-checked');
-                    }
-                """)
-                log.info("Select All click %d: %s", i, res)
-                page.wait_for_timeout(1_000)
+            # ── Balance Sheet options (set once) ─────────────────────────────
+            # Note: button textContent is title-case (CSS does uppercase styling)
+            # Report Type: Legal Entity Side by Side
+            _set_report_type_bs(ctx, page, "Legal Entity Side by Side")
 
-            # ── Step 9: type the receivable account into the search input ────
-            SEARCH_TERM = account
-            log.info("Finding search input")
-            try:
-                if ctx != page:
-                    inp = ctx.locator('input:not([disabled]):not([type="hidden"])').last
-                else:
-                    inp = page.locator('input:not([disabled]):not([type="hidden"])').last
-                inp.click(timeout=5_000)
-                inp.fill("")
-                inp.type(SEARCH_TERM, delay=60)
-                log.info("Typed %r via frame locator", SEARCH_TERM)
-            except Exception as e:
-                log.warning("Frame locator input failed (%s) — keyboard fallback", e)
-                page.keyboard.type(SEARCH_TERM, delay=60)
-            page.wait_for_timeout(2_500)
+            # Detail Level: Detail
+            _click_button_group(ctx, "Detail Level", "Detail")
+            page.wait_for_timeout(300)
 
-            # Pre-select screenshot
-            pre = _snap(page, "pre_select")
-            log.info("Pre-select screenshot: %s", pre)
-            _emit(f"Searching for account {account}…", pre)
+            # Account View: Name
+            _click_button_group(ctx, "Account View", "Name")
+            page.wait_for_timeout(300)
 
-            # ── Step 10: check the account's checkbox ────────────────────────
-            # The dialog is AngularJS Material inside the iframe (ctx). Each
-            # row has a wrapper <button aria-label="<account>"
-            # ng-click="wantedItem(item[0], true)"> that is the canonical way
-            # to toggle selection — clicking it calls the AngularJS handler
-            # which sets `wanted=true` and triggers a digest cycle. The
-            # md-checkbox fallback handles aria-labels rendered with a trailing
-            # space.
-            log.info("Selecting '%s' via AngularJS wantedItem()", account)
+            # Hide $0 Balances: Yes
+            _click_button_group(ctx, "Hide $0 Balances", "Yes")
+            page.wait_for_timeout(300)
 
-            click_result = ctx.evaluate(f"""
-                () => {{
-                    const acct = {json.dumps(account)};
-                    // Prefer the wrapper button (canonical AngularJS handler)
-                    const btn = document.querySelector(
-                        'button[aria-label="' + acct + '"]'
-                    );
-                    if (btn) {{
-                        btn.scrollIntoView({{block:'center'}});
-                        btn.click();
-                        return 'wrapper-button-clicked';
-                    }}
-                    // Fallback: click the md-checkbox directly (note trailing space in aria-label)
-                    const cb = document.querySelector(
-                        'md-checkbox[aria-label="' + acct + ' "], ' +
-                        'md-checkbox[aria-label="' + acct + '"]'
-                    );
-                    if (cb) {{
-                        cb.scrollIntoView({{block:'center'}});
-                        cb.click();
-                        return 'md-checkbox-clicked aria-checked=' + cb.getAttribute('aria-checked');
-                    }}
-                    return 'no-target-found';
-                }}
-            """)
-            log.info("Checkbox click: %s", click_result)
-            page.wait_for_timeout(1_500)
+            # Rounding: No Rounding
+            _click_button_group(ctx, "Rounding", "No Rounding")
+            page.wait_for_timeout(300)
 
-            # Verify the checkbox is actually checked now
-            verify = ctx.evaluate(f"""
-                () => {{
-                    const acct = {json.dumps(account)};
-                    const cb = document.querySelector(
-                        'md-checkbox[aria-label="' + acct + ' "], ' +
-                        'md-checkbox[aria-label="' + acct + '"]'
-                    );
-                    return cb ? cb.getAttribute('aria-checked') : 'not-found';
-                }}
-            """)
-            log.info("Checkbox aria-checked after click: %s", verify)
+            # Show Unapproved: No
+            _click_button_group(ctx, "Show Unapproved", "No")
+            page.wait_for_timeout(300)
 
-            # Screenshot after checking — should show checkbox ticked
-            check_shot = _snap(page, "checked")
-            log.info("After-check screenshot: %s", check_shot)
-            _emit(f"Account {account} selected", check_shot)
-
-            # ── Step 11: click OK to confirm selection ───────────────────────
-            # Use the exact ng-click selector — there are two buttons with
-            # text "OK"/"Cancel" but only one has ng-click="closeDialog('OK')".
-            log.info("Clicking OK to confirm (ng-click=closeDialog('OK'))")
-            ok_result = ctx.evaluate(r"""
-                () => {
-                    // Match by ng-click attribute (most reliable)
-                    const ok = document.querySelector(
-                        "button[ng-click=\"closeDialog('OK')\"]"
-                    );
-                    if (ok) {
-                        ok.scrollIntoView({block:'center'});
-                        ok.click();
-                        return 'ok-ng-click';
-                    }
-                    // Fallback: find by exact text inside md-dialog-actions
-                    const actions = document.querySelector('md-dialog-actions');
-                    if (actions) {
-                        const btn = Array.from(actions.querySelectorAll('button'))
-                            .find(b => b.textContent.trim().toUpperCase() === 'OK');
-                        if (btn) { btn.click(); return 'ok-dialog-actions'; }
-                    }
-                    return 'ok-not-found';
-                }
-            """)
-            log.info("OK: %s", ok_result)
-            page.wait_for_timeout(2_500)
-
-            # ── Steps 17-19: Set dates and toggles (runs once) ───────────────
-            if start_date:
-                s_str = f"{start_date.month}/{start_date.day}/{start_date.year}"
-                log.info("Setting Start date to %s", s_str)
-                r = _set_datepicker(ctx, page, "Start", s_str)
-                log.info("Start date result: %s", r)
-
+            # As Of date (Balance Sheet uses single date, not start/end)
             if end_date:
                 e_str = f"{end_date.month}/{end_date.day}/{end_date.year}"
-                log.info("Setting End date to %s", e_str)
-                r = _set_datepicker(ctx, page, "End", e_str)
-                log.info("End date result: %s", r)
+                log.info("Setting As Of date to %s", e_str)
+                r = _set_as_of_date(ctx, page, e_str)
+                log.info("As Of date result: %s", r)
 
-            log.info("Setting Show Unapproved to %r", show_unapproved)
-            _click_button_group(ctx, "Show Unapproved", show_unapproved)
-            page.wait_for_timeout(400)
-
-            log.info("Setting Calendar to %r", calendar)
-            _click_button_group(ctx, "Calendar", calendar)
-            page.wait_for_timeout(400)
-
-            filters_shot = _snap(page, "filters_set")
-            _emit(
-                f"Filters set — dates: {start_date or 'default'} → {end_date or 'default'}, "
-                f"Show Unapproved: {show_unapproved}, Calendar: {calendar}",
-                filters_shot,
-            )
+            filters_shot = _snap(page, "bs_options_set")
+            _emit(f"Balance Sheet options set — As Of: {end_date or 'default'}", filters_shot)
 
             # ── FIND_AND_CLICK_RUN_JS shared across iterations ───────────────
             FIND_AND_CLICK_RUN_JS = """
@@ -792,8 +1173,9 @@ def open_report_viewer(
                 _emit(f"Processing entity {i + 1}/{len(legal_entities)}: {entity}…")
 
                 if i == 0:
-                    # First entity: select legal entity then click Run from customize panel
-                    _select_legal_entity(ctx, page, entity)
+                    # First entity: open Filter modal and select entity.
+                    # skip_filter_type=True because Filter By is already "Legal Entity" on Balance Sheet.
+                    _select_legal_entity(ctx, page, entity, skip_filter_type=True)
                     _emit(f"Legal entity '{entity}' selected", _snap(page, "entity_ok"))
 
                     # ── Step 20: Click RUN to open ReportViewer ───────────────
@@ -810,32 +1192,6 @@ def open_report_viewer(
 
                     _emit("Clicked RUN — waiting for ReportViewer tab…",
                           _snap(page, "run_clicked"))
-
-                    # ── Set up download capture ───────────────────────────────
-                    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-                    captured_download = {"dl": None}
-
-                    def _on_download(dl, _cap=captured_download):
-                        if _cap["dl"] is None:
-                            _cap["dl"] = dl
-                            log.info("Download event captured: %s", dl.suggested_filename)
-
-                    popup_pages: list = []
-
-                    def _on_popup(p):
-                        popup_pages.append(p)
-                        log.info("Popup page opened: %s", p.url[:120])
-                        try:
-                            p.on("download", _on_download)
-                        except Exception:
-                            pass
-
-                    browser.on("page", _on_popup)
-                    browser.on("download", _on_download)
-                    try:
-                        page.on("download", _on_download)
-                    except Exception:
-                        pass
 
                     page.wait_for_timeout(3_000)
                     REPORT_VIEWER_URL = "https://ayg.restaurant365.com/#/ReportViewer"
@@ -860,11 +1216,10 @@ def open_report_viewer(
                     log.info("ReportViewer: %s", viewer_page.url[:120])
                     try:
                         viewer_page.bring_to_front()
-                        viewer_page.on("download", _on_download)
                     except Exception:
                         pass
                     try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
                     except Exception:
                         pass
 
@@ -874,7 +1229,16 @@ def open_report_viewer(
                         log.warning("remove_listener failed (non-fatal): %s", e)
 
                 else:
-                    # Subsequent entities: click Customize on viewer_page, change entity, run
+                    # Subsequent entities: return to the Balance Sheet tab first,
+                    # then open Customize and change the entity filter.
+                    log.info("Bringing viewer_page to front for entity %r", entity)
+                    try:
+                        viewer_page.bring_to_front()
+                    except Exception:
+                        pass
+                    viewer_page.wait_for_timeout(1_000)
+
+                    # Click Customize
                     log.info("Clicking Customize on ReportViewer for entity %r", entity)
                     cust_clicked = False
                     try:
@@ -887,7 +1251,6 @@ def open_report_viewer(
                         log.warning("Customize ng-click selector failed: %s", ce)
 
                     if not cust_clicked:
-                        # Fallback: find by button text
                         try:
                             cust_result = viewer_page.evaluate("""
                                 () => {
@@ -904,8 +1267,10 @@ def open_report_viewer(
 
                     viewer_page.wait_for_timeout(2_000)
 
-                    # On viewer_page, ctx IS viewer_page
-                    _select_legal_entity(viewer_page, viewer_page, entity)
+                    # Change the Filter (Legal Entity) using the modal multi-select dialog.
+                    # On the viewer page, skip_filter_type=True because Filter By is
+                    # already "Legal Entity" from the first run.
+                    _select_legal_entity(viewer_page, viewer_page, entity, skip_filter_type=True)
                     _emit(f"Legal entity '{entity}' selected", _snap(viewer_page, "entity_ok"))
 
                     # Click Run on viewer_page
@@ -913,7 +1278,6 @@ def open_report_viewer(
                     run_result = viewer_page.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
                     log.info("Run button (viewer_page): %s", run_result)
                     if "run-not-found" in (run_result or ""):
-                        # Try frames within viewer_page
                         for _flabel, _fc in _contexts(viewer_page):
                             try:
                                 run_result = _fc.evaluate(FIND_AND_CLICK_RUN_JS, TARGET_REPORT)
@@ -925,153 +1289,125 @@ def open_report_viewer(
 
                     viewer_page.wait_for_timeout(3_000)
                     try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=20_000)
+                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
                     except Exception:
                         pass
 
-                    # Fresh download capture for this entity
-                    captured_download = {"dl": None}
-                    popup_pages = []
+                rv_loaded_snap = _snap(viewer_page, "report_viewer_loaded")
+                _emit("Opened ReportViewer — waiting for report render…", rv_loaded_snap)
+                log.info("ReportViewer URL after RUN: %s", viewer_page.url)
 
-                    def _on_download(dl, _cap=captured_download):
-                        if _cap["dl"] is None:
-                            _cap["dl"] = dl
-                            log.info("Download event captured: %s", dl.suggested_filename)
-
-                    viewer_page.on("download", _on_download)
-                    browser.on("download", _on_download)
-
-                _emit("Opened ReportViewer — locating Export dropdown…",
-                      _snap(viewer_page, "report_viewer_loaded"))
-
-                # ── Export Excel (same logic for all entities) ────────────────
-                save_dropdown_clicked = None
-                deadline = time.time() + 30
-                while time.time() < deadline and save_dropdown_clicked is None:
-                    for label, c in _contexts(viewer_page):
+                # ── Wait for the row_label row to appear in the SSRS iframe ──
+                render_deadline = time.time() + 90
+                row_ready = False
+                while time.time() < render_deadline:
+                    for _lbl, _c in _contexts(viewer_page):
                         try:
-                            trigger = c.locator(
-                                'a[title="Export drop down menu"]'
-                            ).first
-                            if trigger.count() > 0 and trigger.is_visible(timeout=500):
-                                trigger.click()
-                                save_dropdown_clicked = label
-                                log.info("Save/Export dropdown clicked in %s", label)
+                            present = _c.evaluate("""
+                                (label) => Array.from(document.querySelectorAll('*'))
+                                    .some(e => e.offsetParent !== null
+                                            && e.children.length === 0
+                                            && (e.textContent||'').trim().endsWith(label))
+                            """, row_label)
+                            if present:
+                                log.info("Row %r found in [%s]", row_label, _lbl)
+                                row_ready = True
                                 break
                         except Exception:
                             continue
-                    if save_dropdown_clicked is None:
+                    if row_ready:
+                        break
+                    viewer_page.wait_for_timeout(1_000)
+
+                pre_snap = _snap(viewer_page, "before_drilldown")
+                if not row_ready:
+                    log.warning("%r row not found within 90s — trying drilldown anyway", row_label)
+                    _emit(f"WARNING: {row_label!r} not found after 90s", pre_snap)
+                else:
+                    _emit(f"Found {row_label!r} — drilling into {entity}…", pre_snap)
+
+                # ── Drill into (entity × row_label) cell ─────────────────────
+                # The amount link has target="_blank" so it opens a NEW TAB.
+                # Listen for the new page before clicking.
+                detail_pages: list = []
+                _on_detail = lambda p: detail_pages.append(p)
+                browser.on("page", _on_detail)
+
+                drill = _click_drilldown_amount(viewer_page, entity, row_label)
+                log.info("Drilldown click result: %s", drill)
+
+                if drill.startswith("clicked"):
+                    # Wait up to 15s for the new tab to appear
+                    deadline_dt = time.time() + 15
+                    while time.time() < deadline_dt and not detail_pages:
                         viewer_page.wait_for_timeout(500)
 
-                download_filename = None
-
-                if save_dropdown_clicked is None:
-                    log.warning("Save/Export dropdown trigger never appeared")
-                    _emit("Save/Export dropdown not found",
-                          _snap(viewer_page, "save_missing"))
-                else:
-                    viewer_page.wait_for_timeout(1_500)
-                    _emit("Save dropdown opened — clicking Excel…",
-                          _snap(viewer_page, "save_opened"))
-
-                    excel_clicked_in = None
-                    deadline = time.time() + 20
-                    while time.time() < deadline and excel_clicked_in is None:
-                        for label, c in _contexts(viewer_page):
-                            try:
-                                result = c.evaluate("""
-                                    () => {
-                                        // Match any element whose text contains "excel"
-                                        // (case-insensitive) — covers "Excel", "Microsoft Excel",
-                                        // "Excel (.xlsx)", "Excel 2007-2013 (.xlsx)", etc.
-                                        const els = Array.from(document.querySelectorAll(
-                                            'a, li, td, div[role="menuitem"], ' +
-                                            'li[role="menuitem"], span, input[type="button"]'
-                                        ));
-                                        const excelEl = els.find(e => {
-                                            const t = e.textContent.trim().toLowerCase();
-                                            return t.includes('excel') && t.length < 60;
-                                        });
-                                        if (excelEl) {
-                                            excelEl.scrollIntoView({block:'center'});
-                                            excelEl.click();
-                                            return 'clicked:' + excelEl.textContent.trim();
-                                        }
-                                        // Log ALL visible short-text elements so we can
-                                        // diagnose what the dropdown actually contains.
-                                        const visible = els
-                                            .filter(e => e.offsetParent !== null
-                                                      && e.textContent.trim().length < 60)
-                                            .map(e => e.textContent.trim())
-                                            .filter((v, i, a) => v && a.indexOf(v) === i)
-                                            .slice(0, 40);
-                                        return 'not-found|' + visible.join(';');
-                                    }
-                                """)
-                                if result and result.startswith("clicked:"):
-                                    excel_clicked_in = label
-                                    log.info("Excel option clicked in %s: %s", label, result)
-                                    break
-                                elif result:
-                                    log.info("Excel search in %s: %s", label, result[:300])
-                            except Exception as ex:
-                                log.info("Excel search error in %s: %s", label, ex)
-                                continue
-                        if excel_clicked_in is None:
-                            viewer_page.wait_for_timeout(500)
-
-                    if excel_clicked_in is None:
-                        log.warning("Excel option not found after opening dropdown")
-                        _emit("Excel option not found",
-                              _snap(viewer_page, "excel_missing"))
+                    detail_page = detail_pages[-1] if detail_pages else viewer_page
+                    if detail_pages:
+                        log.info("Detail page opened: %s", detail_page.url[:120])
+                        try:
+                            detail_page.bring_to_front()
+                            detail_page.wait_for_load_state("networkidle", timeout=60_000)
+                        except Exception:
+                            pass
                     else:
-                        deadline = time.time() + 90
-                        while time.time() < deadline and captured_download["dl"] is None:
-                            viewer_page.wait_for_timeout(500)
+                        log.info("No new tab — using viewer_page: %s", viewer_page.url)
 
-                        dl = captured_download["dl"]
-                        if dl is not None:
-                            download_filename = (
-                                dl.suggested_filename
-                                or f"gl_export_{uuid.uuid4().hex[:8]}.xlsx"
-                            )
-                            save_path = DOWNLOADS_DIR / download_filename
+                    # ── Rewrite URL with correct dates and reload ─────────────
+                    # The drilldown URL has Start=M/D/YYYY&End=M/D/YYYY params.
+                    # Swapping them in the URL is more reliable than DOM input manipulation.
+                    if start_date or end_date:
+                        import re as _re
+                        current_url = detail_page.url
+                        log.info("Detail page URL before date fix: %s", current_url)
+
+                        new_url = current_url
+                        if start_date:
+                            s_url = f"{start_date.month}/{start_date.day}/{start_date.year}"
+                            new_url = _re.sub(r'Start=[^&]+', f'Start={s_url}', new_url)
+                            log.info("Start → %s", s_url)
+                        if end_date:
+                            e_url = f"{end_date.month}/{end_date.day}/{end_date.year}"
+                            new_url = _re.sub(r'End=[^&]+', f'End={e_url}', new_url)
+                            log.info("End   → %s", e_url)
+
+                        if new_url != current_url:
+                            log.info("Navigating detail page to date-fixed URL")
+                            _emit(f"Updating dates to {s_url if start_date else '?'} → {e_url if end_date else '?'}…")
                             try:
-                                dl.save_as(str(save_path))
-                                log.info("Saved download: %s", save_path)
-                                _emit(f"Export saved: {download_filename}",
-                                      _snap(viewer_page, "after_download"))
-                            except Exception as se:
-                                log.warning("save_as failed: %s", se)
+                                detail_page.goto(new_url, wait_until="domcontentloaded", timeout=60_000)
+                            except Exception as ge:
+                                log.warning("detail_page.goto warning: %s", ge)
+                            try:
+                                detail_page.wait_for_load_state("networkidle", timeout=90_000)
+                            except Exception:
+                                pass
+                            detail_page.wait_for_timeout(3_000)
+                            log.info("Detail page URL after date fix: %s", detail_page.url)
                         else:
-                            log.warning(
-                                "Excel clicked but no download in 90 s "
-                                "(popups seen: %d)", len(popup_pages),
-                            )
-                            _emit("Excel clicked — download not captured",
-                                  _snap(viewer_page, "after_excel"))
+                            log.warning("URL had no Start=/End= params to replace: %s", current_url)
 
-                results.append({"entity": entity, "download_filename": download_filename})
+                    after_snap = _snap(detail_page, "drilldown_opened")
+                    _emit(f"Detail report ready for {entity}", after_snap)
+                    log.info("Detail report final URL: %s", detail_page.url[:200])
+                    _snap(detail_page, "drilldown_final")
+                else:
+                    fail_snap = _snap(viewer_page, "drilldown_missing")
+                    log.warning("Drilldown FAILED (%s) for %r × %r", drill, entity, row_label)
+                    _emit(f"Drilldown failed ({drill}) — {row_label!r} amount not clickable for {entity}",
+                          fail_snap)
+
+                try:
+                    browser.remove_listener("page", _on_detail)
+                except Exception:
+                    pass
+
+                results.append({"entity": entity, "drilldown": drill})
                 if entity_cb:
                     try:
-                        entity_cb(entity, download_filename)
+                        entity_cb(entity, None)
                     except Exception as ecb_err:
                         log.warning("entity_cb raised: %s", ecb_err)
-
-                # Clean up download listener for this entity before next iteration
-                try:
-                    browser.remove_listener("download", _on_download)
-                except Exception:
-                    pass
-                try:
-                    viewer_page.remove_listener("download", _on_download)
-                except Exception:
-                    pass
-
-            try:
-                browser.remove_listener("page", _on_popup)
-            except Exception:
-                pass
 
             screenshot_name = _snap(viewer_page or page, "report_viewer_final")
             log.info("Final screenshot: %s", screenshot_name)
