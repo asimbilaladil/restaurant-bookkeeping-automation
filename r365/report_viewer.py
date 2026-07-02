@@ -646,6 +646,110 @@ def _select_filter_entity(ctx, page, entity: str) -> str:
     return pick
 
 
+def _click_view_report_and_export(detail_page, entity: str, start_date, end_date, emit_fn=None) -> str | None:
+    """Click View Report on the SSRS GL Account Detail page, wait for render, export to Excel."""
+
+    def _all_ctx(page):
+        yield page
+        for f in page.frames:
+            if f is not page.main_frame:
+                yield f
+
+    # Click View Report
+    for ctx in _all_ctx(detail_page):
+        try:
+            r = ctx.evaluate("""
+                () => {
+                    const btn = document.getElementById('ReportViewerControl_ctl04_ctl00');
+                    if (btn) { btn.click(); return 'clicked-id'; }
+                    const sub = document.querySelector('td.SubmitButtonCell input[type="submit"]');
+                    if (sub) { sub.click(); return 'clicked-submit-cell'; }
+                    const any = Array.from(document.querySelectorAll('input[type="submit"],button'))
+                        .find(b => (b.value||b.textContent||'').trim() === 'View Report');
+                    if (any) { any.click(); return 'clicked-fallback'; }
+                    return 'not-found';
+                }
+            """)
+            log.info("View Report click: %s", r)
+            if r != "not-found":
+                break
+        except Exception as e:
+            log.debug("View Report frame error: %s", e)
+
+    detail_page.wait_for_timeout(2_000)
+    try:
+        detail_page.wait_for_load_state("networkidle", timeout=60_000)
+    except Exception:
+        pass
+    detail_page.wait_for_timeout(3_000)
+
+    # Build download filename
+    entity_slug = entity.replace(" ", "_").replace("/", "-")
+    s_str = f"{start_date.month}-{start_date.day}-{start_date.year}" if start_date else "nostart"
+    e_str = f"{end_date.month}-{end_date.day}-{end_date.year}" if end_date else "noend"
+    filename = f"{entity_slug}_{s_str}_to_{e_str}.xlsx"
+    dest = DOWNLOADS_DIR / filename
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with detail_page.expect_download(timeout=60_000) as dl_info:
+            # Open the export dropdown
+            for ctx in _all_ctx(detail_page):
+                try:
+                    r = ctx.evaluate("""
+                        () => {
+                            const btn = document.getElementById(
+                                'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink');
+                            if (btn) { btn.click(); return 'dropdown-opened'; }
+                            // Fallback: any export/save glyph button
+                            const glyph = document.querySelector('.glyphui-save');
+                            if (glyph) {
+                                const a = glyph.closest('a');
+                                if (a) { a.click(); return 'glyph-clicked'; }
+                            }
+                            return 'not-found';
+                        }
+                    """)
+                    log.info("Export dropdown: %s", r)
+                    if r != "not-found":
+                        break
+                except Exception as e:
+                    log.debug("Export dropdown frame error: %s", e)
+
+            detail_page.wait_for_timeout(800)
+
+            # Click the Excel option
+            for ctx in _all_ctx(detail_page):
+                try:
+                    r = ctx.evaluate("""
+                        () => {
+                            const a = document.querySelector('a[title="Excel"]');
+                            if (a) { a.click(); return 'excel-clicked'; }
+                            if (typeof $find !== 'undefined') {
+                                const rv = $find('ReportViewerControl');
+                                if (rv) { rv.exportReport('EXCELOPENXML'); return 'exportReport-called'; }
+                            }
+                            return 'not-found';
+                        }
+                    """)
+                    log.info("Excel export click: %s", r)
+                    if r != "not-found":
+                        break
+                except Exception as e:
+                    log.debug("Excel export frame error: %s", e)
+
+        download = dl_info.value
+        download.save_as(dest)
+        log.info("Excel saved: %s", dest)
+        if emit_fn:
+            emit_fn(f"Excel saved: {filename}")
+        return str(dest)
+
+    except Exception as e:
+        log.warning("Excel export failed: %s", e)
+        return None
+
+
 def _click_drilldown_amount(viewer_page, entity: str, row_label: str = "A/R-UberEats") -> str:
     """
     Inside the SSRS iframe, find the <tr> whose first cell contains row_label,
@@ -1329,6 +1433,7 @@ def open_report_viewer(
                 # ── Drill into (entity × row_label) cell ─────────────────────
                 # The amount link has target="_blank" so it opens a NEW TAB.
                 # Listen for the new page before clicking.
+                excel_path: str | None = None
                 detail_pages: list = []
                 _on_detail = lambda p: detail_pages.append(p)
                 browser.on("page", _on_detail)
@@ -1387,10 +1492,16 @@ def open_report_viewer(
                         else:
                             log.warning("URL had no Start=/End= params to replace: %s", current_url)
 
+                    # ── Click View Report, then export to Excel ───────────────
+                    _emit(f"Clicking View Report for {entity}…")
+                    excel_path = _click_view_report_and_export(
+                        detail_page, entity, start_date, end_date, _emit
+                    )
+
                     after_snap = _snap(detail_page, "drilldown_opened")
                     _emit(f"Detail report ready for {entity}", after_snap)
                     log.info("Detail report final URL: %s", detail_page.url[:200])
-                    _snap(detail_page, "drilldown_final")
+                    log.info("Excel export path: %s", excel_path)
                 else:
                     fail_snap = _snap(viewer_page, "drilldown_missing")
                     log.warning("Drilldown FAILED (%s) for %r × %r", drill, entity, row_label)
@@ -1402,7 +1513,11 @@ def open_report_viewer(
                 except Exception:
                     pass
 
-                results.append({"entity": entity, "drilldown": drill})
+                results.append({
+                    "entity": entity,
+                    "drilldown": drill,
+                    "excel": excel_path if drill.startswith("clicked") else None,
+                })
                 if entity_cb:
                     try:
                         entity_cb(entity, None)
