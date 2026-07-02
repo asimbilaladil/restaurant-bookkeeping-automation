@@ -294,9 +294,32 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     page.wait_for_timeout(2_500)
 
     # ── Step 13: clear any existing legal entity selections ──────────
+    # Wait for the dialog to fully render before probing checkboxes
+    page.wait_for_timeout(2_000)
+
+    # Dump what's in the dialog for debugging
+    diag = ctx.evaluate("""
+        () => {
+            const cbs = Array.from(document.querySelectorAll('md-checkbox'));
+            return {
+                total: cbs.length,
+                checked_aria: cbs.filter(c => c.getAttribute('aria-checked') === 'true').length,
+                checked_class: cbs.filter(c => c.classList.contains('_md-checked')).length,
+                sample: cbs.slice(0, 6).map(c => ({
+                    aria: c.getAttribute('aria-checked'),
+                    cls: c.className,
+                    ng: c.getAttribute('ng-model') || '',
+                    label: c.getAttribute('aria-label') || (c.textContent||'').trim().slice(0,30),
+                })),
+            };
+        }
+    """)
+    log.info("Dialog checkbox diagnostic: %s", diag)
+
     log.info("Clearing legal entity selections")
     cleared = False
-    # Try "Select All" checkbox via several attribute selectors
+
+    # Strategy 1: Select All checkbox (try multiple selectors)
     for sel in [
         'md-checkbox[ng-model="selectAll"]',
         'md-checkbox[ng-model*="selectAll"]',
@@ -331,18 +354,42 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
             break
 
     if not cleared:
-        # Fallback: individually uncheck every currently-checked md-checkbox
+        # Strategy 2: uncheck every checked md-checkbox individually
+        # Try both aria-checked="true" and ._md-checked class
         n = ctx.evaluate("""
             () => {
-                const checked = Array.from(
-                    document.querySelectorAll('md-checkbox[aria-checked="true"]')
-                );
-                checked.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
-                return checked.length;
+                const byAria = Array.from(
+                    document.querySelectorAll('md-checkbox[aria-checked="true"]'));
+                const byClass = Array.from(
+                    document.querySelectorAll('md-checkbox._md-checked'));
+                // Union both sets
+                const all = [...new Set([...byAria, ...byClass])];
+                // Skip any "Select All" checkbox (we already tried that)
+                const items = all.filter(cb => {
+                    const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
+                    return !lbl.includes('select all');
+                });
+                items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
+                return { byAria: byAria.length, byClass: byClass.length, clicked: items.length };
             }
         """)
-        log.info("Fallback: individually unchecked %s items", n)
-        page.wait_for_timeout(1_000)
+        log.info("Fallback uncheck result: %s", n)
+        page.wait_for_timeout(1_500)
+
+        # Strategy 3: if still nothing found, try clicking li/div rows that look selected
+        if not n or n.get("clicked", 0) == 0:
+            n2 = ctx.evaluate("""
+                () => {
+                    const selected = Array.from(document.querySelectorAll(
+                        'li[aria-selected="true"], li._md-focused, ' +
+                        '.md-checkbox-checked, [class*="selected"] md-checkbox'
+                    ));
+                    selected.forEach(el => el.click());
+                    return selected.length;
+                }
+            """)
+            log.info("Strategy 3 (li/div selected): %s items clicked", n2)
+            page.wait_for_timeout(1_000)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
@@ -703,77 +750,89 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── Export to Excel ────────────────────────────────────────────────
-    # Strategy 1: call $find('ReportViewerControl').exportReport() directly in SSRS frame
-    # Strategy 2: click export dropdown → click Excel link
+    # Take a screenshot so we can see what the page looks like before export
+    _snap_name = f"before_export_{entity.replace(' ', '_')[:20]}"
+    try:
+        detail_page.screenshot(path=f"/tmp/{_snap_name}.png", full_page=False)
+        log.info("Pre-export screenshot: %s.png", _snap_name)
+    except Exception:
+        pass
+
     try:
         with detail_page.expect_download(timeout=90_000) as dl_info:
             exported = False
 
-            # Strategy 1 — direct API call (most reliable, no UI interaction needed)
-            for ctx in _frames(detail_page):
-                try:
-                    r = ctx.evaluate("""
-                        () => {
-                            if (typeof $find === 'undefined') return 'no-$find';
-                            const rv = $find('ReportViewerControl');
-                            if (!rv) return 'rv-null';
-                            rv.exportReport('EXCELOPENXML');
-                            return 'exportReport-called';
-                        }
-                    """)
-                    log.info("Export via $find [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
-                    if r == "exportReport-called":
-                        exported = True
-                        break
-                except Exception as e:
-                    log.debug("$find export error in frame: %s", e)
+            # Strategy 1 — Playwright native locator (handles frames automatically)
+            # The SSRS toolbar is in the main frame of the GL Account Detail page.
+            try:
+                drop_btn = detail_page.locator(
+                    '#ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink, '
+                    'a:has(.glyphui-save)'
+                ).first
+                drop_btn.click(timeout=8_000)
+                log.info("Export dropdown clicked via locator")
+                detail_page.wait_for_timeout(1_000)
+
+                excel_link = detail_page.locator('a[title="Excel"]').first
+                excel_link.click(timeout=5_000)
+                log.info("Excel link clicked via locator")
+                exported = True
+            except Exception as e1:
+                log.warning("Locator export failed (%s) — trying frame search", e1)
 
             if not exported:
-                # Strategy 2 — open dropdown, then click Excel
-                log.info("$find not available — trying dropdown UI")
+                # Strategy 2 — walk all frames and call $find directly
                 for ctx in _frames(detail_page):
                     try:
                         r = ctx.evaluate("""
                             () => {
-                                // Open the export dropdown
-                                const dropBtn = document.getElementById(
-                                    'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink');
-                                if (dropBtn) { dropBtn.click(); return 'dropdown-opened'; }
-                                const glyph = document.querySelector('.glyphui-save');
-                                if (glyph) {
-                                    const a = glyph.closest('a');
-                                    if (a) { a.click(); return 'glyph-clicked'; }
+                                if (typeof $find === 'undefined') return 'no-$find';
+                                const rv = $find('ReportViewerControl');
+                                if (!rv) return 'rv-null';
+                                rv.exportReport('EXCELOPENXML');
+                                return 'ok';
+                            }
+                        """)
+                        log.info("$find export [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
+                        if r == "ok":
+                            exported = True
+                            break
+                    except Exception as e2:
+                        log.debug("$find frame error: %s", e2)
+
+            if not exported:
+                # Strategy 3 — JS click across all frames
+                for ctx in _frames(detail_page):
+                    try:
+                        r = ctx.evaluate("""
+                            () => {
+                                const drop = document.getElementById(
+                                    'ReportViewerControl_ctl05_ctl04_ctl00_ButtonLink')
+                                    || document.querySelector('a:has(.glyphui-save),.glyphui-save');
+                                if (drop) {
+                                    const a = drop.closest ? drop.closest('a') || drop : drop;
+                                    a.click();
+                                    return 'drop-clicked';
                                 }
                                 return 'not-found';
                             }
                         """)
-                        log.info("Dropdown [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
+                        log.info("JS drop [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
                         if r != "not-found":
-                            break
-                    except Exception as e:
-                        log.debug("Dropdown frame error: %s", e)
-
-                detail_page.wait_for_timeout(1_200)
-
-                # Click the Excel link (re-enumerate frames after dropdown opened)
-                for ctx in _frames(detail_page):
-                    try:
-                        r = ctx.evaluate("""
-                            () => {
-                                const a = document.querySelector('a[title="Excel"]');
-                                if (a) { a.click(); return 'excel-link-clicked'; }
-                                return 'not-found';
-                            }
-                        """)
-                        log.info("Excel link [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
-                        if r != "not-found":
+                            detail_page.wait_for_timeout(1_000)
+                            ctx.evaluate("""
+                                () => {
+                                    const a = document.querySelector('a[title="Excel"]');
+                                    if (a) { a.click(); return 'ok'; }
+                                }
+                            """)
                             exported = True
                             break
-                    except Exception as e:
-                        log.debug("Excel link frame error: %s", e)
+                    except Exception as e3:
+                        log.debug("JS drop frame error: %s", e3)
 
             if not exported:
-                log.warning("All export strategies failed — download may not trigger")
+                log.warning("All export strategies failed")
 
         download = dl_info.value
         download.save_as(dest)
