@@ -304,105 +304,86 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
         }
     """)
     log.info("Filter open: %s", open_filter)
-    page.wait_for_timeout(2_500)
+    page.wait_for_timeout(1_000)
 
-    # ── Step 13: clear all entity selections ─────────────────────────
-    page.wait_for_timeout(2_500)  # let dialog fully render
+    # ── Step 13: Click Select All until 0 items are checked ─────────
+    # R365 opens the Filter dialog with the persisted state (often all 23
+    # entities pre-checked). "Select All ×2" fails in that case because
+    # click 1 clears and click 2 re-selects everything. So we click Select
+    # All up to 3 times, stopping the moment the checked count reaches 0.
 
-    # Diagnostic snapshot: what does the DOM look like right now?
-    diag = ctx.evaluate("""
+    COUNT_CHECKED_JS = """
         () => {
             const dialogs = Array.from(document.querySelectorAll(
                 'md-dialog, .md-dialog-container, [role="dialog"]'
             )).filter(d => d.offsetParent !== null);
-            const allCheckboxes = Array.from(document.querySelectorAll('md-checkbox'))
+            const dialog = dialogs[dialogs.length - 1] || document;
+            const checkboxes = Array.from(dialog.querySelectorAll('md-checkbox'))
                 .filter(cb => cb.offsetParent !== null);
-            const chipEls = Array.from(document.querySelectorAll('md-chip, .md-chip, [class*="chip"]'))
-                .filter(c => c.offsetParent !== null);
-            const checked = allCheckboxes.filter(cb => {
+            let total = 0, checked = 0, selectAllChecked = null;
+            for (const cb of checkboxes) {
+                const lbl = (cb.getAttribute('aria-label') || '').toLowerCase().trim();
+                const ng  = (cb.getAttribute('ng-model')   || '').toLowerCase();
+                const txt = (cb.textContent || '').toLowerCase().trim();
+                const isSelectAll = lbl === 'select all'
+                    || lbl.startsWith('select all')
+                    || ng.includes('selectall')
+                    || txt === 'select all'
+                    || txt.startsWith('select all');
                 const ac = cb.getAttribute('aria-checked');
                 const cls = cb.className || '';
-                return ac === 'true' || cls.includes('_md-checked') || cls.includes('md-checked');
-            });
-            return {
-                dialogs: dialogs.length,
-                allCheckboxes: allCheckboxes.length,
-                checked: checked.length,
-                checkedLabels: checked.map(cb =>
-                    (cb.getAttribute('aria-label') || cb.textContent || '').trim().slice(0, 40)
-                ),
-                chips: chipEls.slice(0, 8).map(c => (c.textContent || '').trim().slice(0, 40)),
-            };
-        }
-    """)
-    log.info("Filter dialog diagnostic: %s", diag)
-
-    # Strategy A: uncheck every checked md-checkbox (except Select All)
-    UNCHECK_ALL_JS = """
-        () => {
-            const items = Array.from(document.querySelectorAll('md-checkbox'))
-                .filter(cb => {
-                    if (!cb.offsetParent) return false;
-                    const ac = cb.getAttribute('aria-checked');
-                    const cls = cb.className || '';
-                    const isChecked = ac === 'true'
-                        || cls.includes('_md-checked')
-                        || cls.includes('md-checked');
-                    if (!isChecked) return false;
-                    const lbl = (cb.getAttribute('aria-label') || '').toLowerCase();
-                    const ng = (cb.getAttribute('ng-model') || '').toLowerCase();
-                    return !lbl.includes('select all') && !ng.includes('selectall');
-                });
-            items.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
-            return items.map(cb =>
-                (cb.getAttribute('aria-label') || cb.textContent || '').trim().slice(0, 40)
-            );
+                const isChecked = ac === 'true'
+                    || cls.includes('_md-checked')
+                    || cls.includes('md-checked');
+                if (isSelectAll) { selectAllChecked = isChecked; continue; }
+                total += 1;
+                if (isChecked) checked += 1;
+            }
+            return {total, checked, selectAllChecked};
         }
     """
 
-    log.info("Clearing existing entity selections (iterative uncheck)")
-    total_unchecked = 0
-    for attempt in range(1, 6):
+    SELECT_ALL_CLICK_JS = """
+        () => {
+            const dialogs = Array.from(document.querySelectorAll(
+                'md-dialog, .md-dialog-container, [role="dialog"]'
+            )).filter(d => d.offsetParent !== null);
+            const dialog = dialogs[dialogs.length - 1] || document;
+            const checkboxes = Array.from(dialog.querySelectorAll('md-checkbox'))
+                .filter(cb => cb.offsetParent !== null);
+            const selectAll = checkboxes.find(cb => {
+                const lbl = (cb.getAttribute('aria-label') || '').toLowerCase().trim();
+                const ng  = (cb.getAttribute('ng-model')   || '').toLowerCase();
+                const txt = (cb.textContent || '').toLowerCase().trim();
+                return lbl === 'select all'
+                    || lbl.startsWith('select all')
+                    || ng.includes('selectall')
+                    || txt === 'select all'
+                    || txt.startsWith('select all');
+            });
+            if (!selectAll) return 'select-all-not-found';
+            selectAll.scrollIntoView({block: 'center'});
+            selectAll.click();
+            return 'clicked';
+        }
+    """
+
+    for i in range(1, 4):
         try:
-            unchecked = ctx.evaluate(UNCHECK_ALL_JS)
-        except Exception as ue:
-            log.warning("Uncheck attempt %d failed: %s", attempt, ue)
-            unchecked = []
-        log.info("Uncheck attempt %d: %s items → %s",
-                 attempt, len(unchecked), unchecked[:5])
-        total_unchecked += len(unchecked)
-        if not unchecked:
+            state = ctx.evaluate(COUNT_CHECKED_JS)
+        except Exception as ex:
+            log.warning("Count-checked eval failed: %s", ex)
+            state = {"total": -1, "checked": -1}
+        log.info("Before Select All click #%d: %s", i, state)
+        if state.get("checked") == 0:
+            log.info("Dialog is fully unchecked — stopping clear loop")
             break
-        page.wait_for_timeout(700)
+        r = ctx.evaluate(SELECT_ALL_CLICK_JS)
+        log.info("Select All click #%d: %s", i, r)
+        page.wait_for_timeout(500)
 
-    # Strategy B: if uncheck found nothing but diagnostic showed items are selected
-    # elsewhere (chips/tags), try removing them via X buttons.
-    if total_unchecked == 0 and diag.get("chips"):
-        log.info("No checkboxes unchecked but chips present — attempting chip removal")
-        removed = ctx.evaluate("""
-            () => {
-                const chips = Array.from(document.querySelectorAll(
-                    'md-chip .md-chip-remove, .md-chip button, md-chip button, ' +
-                    '[class*="chip"] [aria-label*="Remove" i], ' +
-                    '[class*="chip"] button.remove, [class*="chip"] .remove'
-                )).filter(el => el.offsetParent !== null);
-                chips.forEach(el => el.click());
-                return chips.length;
-            }
-        """)
-        log.info("Removed %d chip(s)", removed)
-        page.wait_for_timeout(1_000)
-
-    # Strategy C: last resort — clear via search input by pressing backspace many times
-    if total_unchecked == 0 and diag.get("checked", 0) == 0 and diag.get("chips"):
-        log.info("Trying backspace clear of filter input")
-        try:
-            page.keyboard.press("End")
-            for _ in range(30):
-                page.keyboard.press("Backspace")
-            page.wait_for_timeout(500)
-        except Exception as be:
-            log.warning("Backspace clear failed: %s", be)
+    final_state = ctx.evaluate(COUNT_CHECKED_JS)
+    log.info("Final state after clear: %s", final_state)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
@@ -417,7 +398,7 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     except Exception as e:
         log.warning("Entity search input failed (%s) — keyboard fallback", e)
         page.keyboard.type(entity, delay=60)
-    page.wait_for_timeout(2_500)
+    page.wait_for_timeout(800)
 
     # ── Step 15: click the entity's wrapper button ───────────────────
     log.info("Selecting %r", entity)
@@ -439,7 +420,7 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
         }}
     """)
     log.info("Entity click (%s): %s", entity, le_click)
-    page.wait_for_timeout(1_500)
+    page.wait_for_timeout(500)
 
     # ── Step 16: click OK on entity dialog ───────────────────────────
     log.info("Clicking OK on entity dialog")
@@ -457,7 +438,7 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
         }
     """)
     log.info("Entity OK: %s", le_ok)
-    page.wait_for_timeout(2_000)
+    page.wait_for_timeout(800)
 
 
 def _set_report_type_bs(ctx, page, option: str = "Legal Entity Side by Side") -> str:
@@ -742,39 +723,10 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
             if f is not page.main_frame:
                 yield f
 
-    # ── Click View Report ──────────────────────────────────────────────
-    vr_clicked = False
-    for ctx in _frames(detail_page):
-        try:
-            r = ctx.evaluate("""
-                () => {
-                    const btn = document.getElementById('ReportViewerControl_ctl04_ctl00');
-                    if (btn) { btn.click(); return 'clicked-id'; }
-                    const sub = document.querySelector('td.SubmitButtonCell input[type="submit"]');
-                    if (sub) { sub.click(); return 'clicked-submit-cell'; }
-                    const any = Array.from(document.querySelectorAll('input[type="submit"],button'))
-                        .find(b => (b.value||b.textContent||'').trim() === 'View Report');
-                    if (any) { any.click(); return 'clicked-fallback'; }
-                    return 'not-found';
-                }
-            """)
-            log.info("View Report click in frame [%s]: %s", (getattr(ctx, 'url', None) or '')[:60], r)
-            if r != "not-found":
-                vr_clicked = True
-                break
-        except Exception as e:
-            log.debug("View Report frame error: %s", e)
-
-    if not vr_clicked:
-        log.warning("View Report button not found in any frame")
-
-    # Wait for the report to fully render after View Report
-    detail_page.wait_for_timeout(3_000)
-    try:
-        detail_page.wait_for_load_state("networkidle", timeout=60_000)
-    except Exception:
-        pass
-    detail_page.wait_for_timeout(4_000)
+    # No need to click View Report or wait for ReportViewerControl — the primary
+    # export strategy below is a direct HTTP fetch that bypasses the client-side
+    # ReportViewer entirely. If we fall back to the JS API, we'll click View
+    # Report and poll then.
 
     # Log available frames so we can debug if export fails
     for f in detail_page.frames:
@@ -798,7 +750,78 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
     current_url = detail_page.url
     log.info("Detail page URL for export: %s", current_url[:200])
 
-    # Strategy 1: JS API
+    # Build the export URL by adding/replacing rs:Format=EXCELOPENXML.
+    import re as _re
+    if "rs:Format=" in current_url:
+        export_url = _re.sub(r"rs:Format=[^&]+", "rs:Format=EXCELOPENXML", current_url)
+    else:
+        export_url = current_url + "&rs:Format=EXCELOPENXML"
+
+    # Strategy 1 (fastest): direct HTTP GET using the browser's session cookies.
+    # SSRS returns the Excel bytes with Content-Disposition: attachment. This
+    # bypasses the ReportViewer client control entirely — no waiting for
+    # exportReport() to become ready. Usually completes in a few seconds.
+    try:
+        log.info("Fetching Excel via context.request.get")
+        response = detail_page.context.request.get(export_url, timeout=120_000)
+        if response.ok:
+            body = response.body()
+            if body and len(body) > 500:  # sanity check: Excel files are always > 500 bytes
+                with open(dest, "wb") as f:
+                    f.write(body)
+                log.info("Excel saved (HTTP fetch): %s (%d bytes)", dest, len(body))
+                if emit_fn:
+                    emit_fn(f"Excel saved: {filename}")
+                return str(dest)
+            else:
+                log.warning("HTTP fetch returned suspiciously small body (%d bytes) — falling back",
+                            len(body) if body else 0)
+        else:
+            log.warning("HTTP fetch failed with status %d — falling back", response.status)
+    except Exception as e:
+        log.warning("HTTP fetch export failed: %s — trying JS API", e)
+
+    # Strategy 2 (fallback): JS API — needs the ReportViewer client control
+    # ready, so click View Report first and poll for the control.
+    log.info("Falling back to JS API — clicking View Report to init ReportViewerControl")
+    for ctx in _frames(detail_page):
+        try:
+            r = ctx.evaluate("""
+                () => {
+                    const btn = document.getElementById('ReportViewerControl_ctl04_ctl00');
+                    if (btn) { btn.click(); return 'clicked-id'; }
+                    const sub = document.querySelector('td.SubmitButtonCell input[type="submit"]');
+                    if (sub) { sub.click(); return 'clicked-submit-cell'; }
+                    const any = Array.from(document.querySelectorAll('input[type="submit"],button'))
+                        .find(b => (b.value||b.textContent||'').trim() === 'View Report');
+                    if (any) { any.click(); return 'clicked-fallback'; }
+                    return 'not-found';
+                }
+            """)
+            if r != "not-found":
+                log.info("View Report click: %s", r)
+                break
+        except Exception:
+            continue
+
+    ready_deadline = time.time() + 30
+    while time.time() < ready_deadline:
+        try:
+            ok = detail_page.evaluate("""
+                () => {
+                    try {
+                        if (typeof $find === 'undefined') return false;
+                        const rv = $find('ReportViewerControl');
+                        return !!(rv && typeof rv.exportReport === 'function');
+                    } catch (e) { return false; }
+                }
+            """)
+        except Exception:
+            ok = False
+        if ok:
+            break
+        detail_page.wait_for_timeout(300)
+
     try:
         with detail_page.expect_download(timeout=60_000) as dl_info:
             r = detail_page.evaluate("""
@@ -823,17 +846,16 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
         if emit_fn:
             emit_fn(f"Excel saved: {filename}")
         return str(dest)
-    except Exception as e:
-        log.warning("JS API export failed: %s — trying direct link click", e)
+    except Exception as e2:
+        log.warning("JS API export failed: %s — trying direct link click", e2)
 
-    # Strategy 2: click the Excel link directly (menu is display:none but click still triggers onclick)
+    # Strategy 3 (fallback): click the Excel toolbar link directly.
     try:
         with detail_page.expect_download(timeout=60_000) as dl_info:
             r = detail_page.evaluate("""
                 () => {
                     const link = document.querySelector('a[title="Excel"]');
                     if (!link) return 'link-not-found';
-                    // Trigger both onclick handler AND the default click
                     if (typeof link.onclick === 'function') {
                         try { link.onclick(); return 'onclick-called'; } catch (e) {}
                     }
@@ -845,28 +867,6 @@ def _click_view_report_and_export(detail_page, entity: str, start_date, end_date
         download = dl_info.value
         download.save_as(dest)
         log.info("Excel saved (link click): %s", dest)
-        if emit_fn:
-            emit_fn(f"Excel saved: {filename}")
-        return str(dest)
-    except Exception as e2:
-        log.warning("Direct link click failed: %s — trying URL export", e2)
-
-    # Strategy 3: URL-based export
-    import re as _re
-    if "rs:Format=" in current_url:
-        export_url = _re.sub(r"rs:Format=[^&]+", "rs:Format=EXCELOPENXML", current_url)
-    else:
-        export_url = current_url + "&rs:Format=EXCELOPENXML"
-
-    try:
-        with detail_page.expect_download(timeout=60_000) as dl_info:
-            try:
-                detail_page.goto(export_url, wait_until="commit", timeout=45_000)
-            except Exception as ge:
-                log.warning("URL export goto warning: %s", ge)
-        download = dl_info.value
-        download.save_as(dest)
-        log.info("Excel saved (URL export): %s", dest)
         if emit_fn:
             emit_fn(f"Excel saved: {filename}")
         return str(dest)
@@ -1450,7 +1450,7 @@ def open_report_viewer(
                     except Exception:
                         pass
                     try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
+                        viewer_page.wait_for_load_state("domcontentloaded", timeout=15_000)
                     except Exception:
                         pass
 
@@ -1467,7 +1467,7 @@ def open_report_viewer(
                         viewer_page.bring_to_front()
                     except Exception:
                         pass
-                    viewer_page.wait_for_timeout(1_000)
+                    viewer_page.wait_for_timeout(400)
 
                     # Click Customize
                     log.info("Clicking Customize on ReportViewer for entity %r", entity)
@@ -1496,7 +1496,7 @@ def open_report_viewer(
                         except Exception as fe:
                             log.warning("Customize fallback failed: %s", fe)
 
-                    viewer_page.wait_for_timeout(2_000)
+                    viewer_page.wait_for_timeout(800)
 
                     # Change the Filter (Legal Entity) using the modal multi-select dialog.
                     # On the viewer page, skip_filter_type=True because Filter By is
@@ -1518,11 +1518,10 @@ def open_report_viewer(
                             except Exception:
                                 continue
 
-                    viewer_page.wait_for_timeout(3_000)
-                    try:
-                        viewer_page.wait_for_load_state("networkidle", timeout=60_000)
-                    except Exception:
-                        pass
+                    viewer_page.wait_for_timeout(500)
+                    # Skip networkidle here — SSRS ReportViewer polls constantly and
+                    # rarely reaches idle. The row-label polling loop below is the
+                    # real render check.
 
                 rv_loaded_snap = _snap(viewer_page, "report_viewer_loaded")
                 _emit("Opened ReportViewer — waiting for report render…", rv_loaded_snap)
@@ -1548,7 +1547,7 @@ def open_report_viewer(
                             continue
                     if row_ready:
                         break
-                    viewer_page.wait_for_timeout(1_000)
+                    viewer_page.wait_for_timeout(300)
 
                 pre_snap = _snap(viewer_page, "before_drilldown")
                 if not row_ready:
@@ -1572,24 +1571,30 @@ def open_report_viewer(
                     # Wait up to 15s for the new tab to appear
                     deadline_dt = time.time() + 15
                     while time.time() < deadline_dt and not detail_pages:
-                        viewer_page.wait_for_timeout(500)
+                        viewer_page.wait_for_timeout(150)
 
                     detail_page = detail_pages[-1] if detail_pages else viewer_page
                     if detail_pages:
                         log.info("Detail page opened: %s", detail_page.url[:120])
                         try:
                             detail_page.bring_to_front()
-                            detail_page.wait_for_load_state("networkidle", timeout=60_000)
                         except Exception:
                             pass
                     else:
                         log.info("No new tab — using viewer_page: %s", viewer_page.url)
 
                     # ── Rewrite URL with correct dates and reload ─────────────
-                    # The drilldown URL has Start=M/D/YYYY&End=M/D/YYYY params.
-                    # Swapping them in the URL is more reliable than DOM input manipulation.
+                    # The drilldown URL has Start=M/D/YYYY&End=M/D/YYYY params (default dates).
+                    # We rewrite immediately WITHOUT waiting for the wrong-dates page to load —
+                    # that saves an entire SSRS render cycle. The URL is set on the tab as soon
+                    # as it opens, so we can read/rewrite it right away.
                     if start_date or end_date:
                         import re as _re
+                        # Wait briefly for the URL to be populated (new tab might briefly be about:blank)
+                        for _ in range(30):
+                            if detail_page.url and "ReportViewer" in detail_page.url:
+                                break
+                            detail_page.wait_for_timeout(100)
                         current_url = detail_page.url
                         log.info("Detail page URL before date fix: %s", current_url)
 
@@ -1604,20 +1609,21 @@ def open_report_viewer(
                             log.info("End   → %s", e_url)
 
                         if new_url != current_url:
-                            log.info("Navigating detail page to date-fixed URL")
+                            log.info("Navigating detail page to date-fixed URL (interrupting wrong-dates load)")
                             _emit(f"Updating dates to {s_url if start_date else '?'} → {e_url if end_date else '?'}…")
                             try:
                                 detail_page.goto(new_url, wait_until="domcontentloaded", timeout=60_000)
                             except Exception as ge:
                                 log.warning("detail_page.goto warning: %s", ge)
-                            try:
-                                detail_page.wait_for_load_state("networkidle", timeout=90_000)
-                            except Exception:
-                                pass
-                            detail_page.wait_for_timeout(3_000)
                             log.info("Detail page URL after date fix: %s", detail_page.url)
                         else:
                             log.warning("URL had no Start=/End= params to replace: %s", current_url)
+                    else:
+                        # No dates to rewrite — just wait for the drilldown page to load.
+                        try:
+                            detail_page.wait_for_load_state("domcontentloaded", timeout=15_000)
+                        except Exception:
+                            pass
 
                     # ── Click View Report, then export to Excel ───────────────
                     _emit(f"Clicking View Report for {entity}…")
