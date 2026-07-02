@@ -261,6 +261,19 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
         log.info("Skipping Filter By step (already set to Legal Entity on viewer page)")
 
     # ── Step 12c: open the FILTER multi-select dialog ─────────────────
+    # First, close any stray modal dialogs (e.g. a stuck Report Type dropdown).
+    # Multiple stacked dialogs cause every subsequent selector to pick from
+    # the wrong one, producing the "23 items selected" symptom.
+    stray = ctx.evaluate("""
+        () => Array.from(document.querySelectorAll('md-dialog'))
+            .filter(d => d.offsetParent !== null).length
+    """)
+    if stray > 0:
+        log.info("Found %d open dialog(s) before filter open — closing with Escape", stray)
+        for _ in range(min(stray + 1, 5)):
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+
     log.info("Opening Filter (entity multi-select) dialog")
     open_filter = ctx.evaluate("""
         () => {
@@ -477,7 +490,33 @@ def _set_report_type_bs(ctx, page, option: str = "Legal Entity Side by Side") ->
     if "not-found" in open_result:
         return f"report-type-{open_result}"
 
-    page.wait_for_timeout(1_500)
+    # Poll up to 20s for the Report Type options to load (Loading... to go away
+    # AND the target option button to appear). Fixed timeouts are unreliable —
+    # sometimes loading is <1s, sometimes >2s. If we click too early we get
+    # "not-found" and the dialog stays open, causing every subsequent step to
+    # interact with the wrong dialog.
+    loaded = False
+    for i in range(40):  # 40 * 500ms = 20s
+        page.wait_for_timeout(500)
+        try:
+            ready = ctx.evaluate(f"""
+                (opt) => {{
+                    const dialogs = Array.from(document.querySelectorAll('md-dialog'))
+                        .filter(d => d.offsetParent !== null);
+                    const dialog = dialogs[dialogs.length - 1];
+                    if (!dialog) return false;
+                    if ((dialog.textContent || '').includes('Loading...')) return false;
+                    return !!dialog.querySelector('button[aria-label="' + opt + '"]');
+                }}
+            """, option)
+        except Exception:
+            ready = False
+        if ready:
+            log.info("Report Type options loaded after ~%dms", (i + 1) * 500)
+            loaded = True
+            break
+    if not loaded:
+        log.warning("Report Type options did not load — proceeding anyway")
 
     # Step 2: the Report Type trigger opens an md-dialog modal containing
     # options laid out as rows inside md-virtual-repeat-container. The text
