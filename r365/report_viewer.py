@@ -294,37 +294,55 @@ def _select_legal_entity(ctx, page, entity: str, skip_filter_type: bool = False)
     page.wait_for_timeout(2_500)
 
     # ── Step 13: clear any existing legal entity selections ──────────
-    # Click Select All only as needed to reach aria-checked=false (none selected).
-    # Behavior of md-checkbox[ng-model=selectAll]:
-    #   unchecked → click → all selected (aria-checked=true)
-    #   mixed/true → click → none selected (aria-checked=false)
-    log.info("Clearing legal entity selections (Select All → none selected)")
-    for i in range(1, 5):
-        page.wait_for_timeout(500)
-        state = ctx.evaluate("""
+    log.info("Clearing legal entity selections")
+    cleared = False
+    # Try "Select All" checkbox via several attribute selectors
+    for sel in [
+        'md-checkbox[ng-model="selectAll"]',
+        'md-checkbox[ng-model*="selectAll"]',
+        'md-checkbox[aria-label="Select All"]',
+        'md-checkbox[aria-label*="select all" i]',
+    ]:
+        for i in range(1, 5):
+            page.wait_for_timeout(500)
+            state = ctx.evaluate(f"""
+                () => {{
+                    const sa = document.querySelector({repr(sel)});
+                    return sa ? sa.getAttribute('aria-checked') : 'not-found';
+                }}
+            """)
+            log.info("Select All (%s) state %d: %s", sel, i, state)
+            if state == "false":
+                log.info("All deselected via Select All")
+                cleared = True
+                break
+            if state == "not-found":
+                break
+            ctx.evaluate(f"""
+                () => {{
+                    const sa = document.querySelector({repr(sel)});
+                    if (!sa) return;
+                    sa.scrollIntoView({{block:'center'}});
+                    sa.click();
+                }}
+            """)
+            page.wait_for_timeout(1_200)
+        if cleared:
+            break
+
+    if not cleared:
+        # Fallback: individually uncheck every currently-checked md-checkbox
+        n = ctx.evaluate("""
             () => {
-                const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
-                return sa ? sa.getAttribute('aria-checked') : 'not-found';
+                const checked = Array.from(
+                    document.querySelectorAll('md-checkbox[aria-checked="true"]')
+                );
+                checked.forEach(cb => { cb.scrollIntoView({block:'center'}); cb.click(); });
+                return checked.length;
             }
         """)
-        log.info("Select All state before click %d: %s", i, state)
-        if state == "false":
-            log.info("Select All is unchecked (none selected) — done")
-            break
-        if state == "not-found":
-            log.warning("Select All checkbox not found")
-            break
-        res = ctx.evaluate("""
-            () => {
-                const sa = document.querySelector('md-checkbox[ng-model="selectAll"]');
-                if (!sa) return 'not-found';
-                sa.scrollIntoView({block:'center'});
-                sa.click();
-                return 'clicked';
-            }
-        """)
-        log.info("Select All click %d: %s", i, res)
-        page.wait_for_timeout(1_200)
+        log.info("Fallback: individually unchecked %s items", n)
+        page.wait_for_timeout(1_000)
 
     # ── Step 14: type the chosen legal entity in search input ─────────
     log.info("Typing %r in entity search", entity)
