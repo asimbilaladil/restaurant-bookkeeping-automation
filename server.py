@@ -49,6 +49,7 @@ CORS(app)
 
 _LOGIN_USERNAME = os.environ["LOGIN_USERNAME"]
 _LOGIN_PASSWORD_HASH = os.environ["LOGIN_PASSWORD_HASH"]
+_DSS_FAILED_API_TOKEN = os.environ.get("DSS_FAILED_API_TOKEN", "")
 
 
 def login_required(f):
@@ -180,13 +181,21 @@ def dss_runs_api():
 
 
 @app.route("/api/dss-runs/failed-yesterday")
-@login_required
 def dss_runs_failed_yesterday():
     """Return locations that ONLY failed yesterday — no successful run for that date.
 
-    Optional query param ?date=YYYY-MM-DD overrides 'yesterday' so you can
-    query any specific date from the frontend.
+    Accepts either a valid browser session OR a static API token via:
+      Authorization: Bearer <token>
+    The token is set via the DSS_FAILED_API_TOKEN environment variable.
+
+    Optional query param ?date=YYYY-MM-DD overrides 'yesterday'.
     """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not session.get("authenticated"):
+        if not _DSS_FAILED_API_TOKEN or token != _DSS_FAILED_API_TOKEN:
+            return jsonify({"error": "Unauthorized"}), 401
+
     from datetime import date, timedelta
     raw_date = request.args.get("date")
     if raw_date:
