@@ -49,7 +49,9 @@ CORS(app)
 
 _LOGIN_USERNAME = os.environ["LOGIN_USERNAME"]
 _LOGIN_PASSWORD_HASH = os.environ["LOGIN_PASSWORD_HASH"]
-_DSS_FAILED_API_TOKEN = os.environ.get("DSS_FAILED_API_TOKEN", "")
+
+# Static bearer token guarding the public /api/dss-runs/failed route ONLY.
+_DSS_RUNS_API_TOKEN = os.environ.get("DSS_RUNS_API_TOKEN", "")
 
 
 def login_required(f):
@@ -57,6 +59,29 @@ def login_required(f):
     def decorated(*args, **kwargs):
         if not session.get("authenticated"):
             return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _extract_bearer_token() -> str:
+    """Pull the API token from Authorization: Bearer, X-API-Token, or ?token=."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return (request.headers.get("X-API-Token") or request.args.get("token") or "").strip()
+
+
+def token_required(f):
+    """Guard a single route with the static DSS_RUNS_API_TOKEN (no session)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _DSS_RUNS_API_TOKEN:
+            return jsonify({"error": "API token not configured on server"}), 503
+        provided = _extract_bearer_token()
+        # Constant-time compare to avoid leaking the token via timing.
+        import hmac
+        if not provided or not hmac.compare_digest(provided, _DSS_RUNS_API_TOKEN):
+            return jsonify({"error": "unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -180,41 +205,49 @@ def dss_runs_api():
 
 
 
-@app.route("/api/dss-runs/failed-yesterday")
-def dss_runs_failed_yesterday():
-    """Return locations that ONLY failed yesterday — no successful run for that date.
+@app.route("/api/dss-runs/failed")
+@token_required
+def dss_runs_failed_api():
+    """Token-protected: locations that failed with NO successful run.
 
-    Accepts either a valid browser session OR a static API token via:
-      Authorization: Bearer <token>
-    The token is set via the DSS_FAILED_API_TOKEN environment variable.
-
-    Optional query param ?date=YYYY-MM-DD overrides 'yesterday'.
+    Auth: `Authorization: Bearer <token>` (or `X-API-Token` header / `?token=`).
+    Query:
+        date  optional YYYY-MM-DD. Omit it to get EVERY failed (location, date)
+              in the history that never had a success; pass it to scope to one day.
     """
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header.removeprefix("Bearer ").strip()
-    if not session.get("authenticated"):
-        if not _DSS_FAILED_API_TOKEN or token != _DSS_FAILED_API_TOKEN:
-            return jsonify({"error": "Unauthorized"}), 401
-
-    from datetime import date, timedelta
-    raw_date = request.args.get("date")
-    if raw_date:
+    date_arg = request.args.get("date")
+    run_date = None
+    if date_arg:
         try:
-            run_date = str(date.fromisoformat(raw_date))
+            run_date = str(date.fromisoformat(date_arg))
         except ValueError:
-            return jsonify({"error": "Invalid date format — use YYYY-MM-DD"}), 400
-    else:
-        run_date = str(date.today() - timedelta(days=1))
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
 
-    rows = db.get_failed_no_success(run_date)
-    for r in rows:
+    failed = db.get_failed_no_success(run_date)
+    for r in failed:
         if not r.get("establishment_name"):
             r["establishment_name"] = ESTABLISHMENT_NAMES.get(r.get("establishment_id"), "")
 
+    locations = [
+        {
+            "establishment_id":   r.get("establishment_id"),
+            "establishment_name": r.get("establishment_name"),
+            "run_date":           r.get("run_date"),
+            "status":             r.get("status"),
+            "error":              r.get("error"),
+            "je_difference":      r.get("je_difference"),
+            "je_balanced":        bool(r["je_balanced"]) if r.get("je_balanced") is not None else None,
+            "attachment_status":  r.get("attachment_status"),
+            "approved":           r.get("approved"),
+            "last_attempt_at":    r.get("created_at"),
+            "log_url":            f"/logs/{r['log_filename']}" if r.get("log_filename") else None,
+        }
+        for r in failed
+    ]
     return jsonify({
-        "date": run_date,
-        "failed_count": len(rows),
-        "locations": rows,
+        "date": run_date or "all",
+        "count": len(locations),
+        "locations": locations,
     })
 
 
