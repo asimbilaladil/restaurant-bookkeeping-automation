@@ -138,3 +138,46 @@ def count_runs(run_date: str | None = None, establishment_id=None,
     with _lock, _connect() as conn:
         (n,) = conn.execute(f"SELECT COUNT(*) FROM dss_runs{where}", params).fetchone()
     return n
+
+
+def get_failed_no_success(run_date: str) -> list[dict]:
+    """Return one row per location that ONLY failed on run_date (no success exists).
+
+    Locations that failed AND later succeeded are excluded — they've been fixed.
+    Each returned row is the most recent failure for that location, plus a
+    total_attempts count so callers know how many times it was retried.
+    """
+    sql = """
+        SELECT
+            establishment_id,
+            establishment_name,
+            run_date,
+            MAX(created_at)   AS latest_attempt_at,
+            COUNT(*)          AS total_attempts,
+            -- pick error text from the most recent failed row
+            (
+                SELECT error FROM dss_runs d2
+                WHERE d2.establishment_id = d.establishment_id
+                  AND d2.run_date = ?
+                  AND d2.status IN ('failed', 'error')
+                ORDER BY d2.id DESC LIMIT 1
+            ) AS latest_error,
+            (
+                SELECT status FROM dss_runs d3
+                WHERE d3.establishment_id = d.establishment_id
+                  AND d3.run_date = ?
+                  AND d3.status IN ('failed', 'error')
+                ORDER BY d3.id DESC LIMIT 1
+            ) AS latest_status
+        FROM dss_runs d
+        WHERE run_date = ?
+          AND establishment_id NOT IN (
+              SELECT establishment_id FROM dss_runs
+              WHERE run_date = ? AND status = 'success'
+          )
+        GROUP BY establishment_id, establishment_name, run_date
+        ORDER BY latest_attempt_at DESC
+    """
+    with _lock, _connect() as conn:
+        rows = conn.execute(sql, (run_date, run_date, run_date, run_date)).fetchall()
+    return [dict(r) for r in rows]

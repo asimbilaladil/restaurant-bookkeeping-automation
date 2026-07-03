@@ -179,6 +179,36 @@ def dss_runs_api():
 
 
 
+@app.route("/api/dss-runs/failed-yesterday")
+@login_required
+def dss_runs_failed_yesterday():
+    """Return locations that ONLY failed yesterday — no successful run for that date.
+
+    Optional query param ?date=YYYY-MM-DD overrides 'yesterday' so you can
+    query any specific date from the frontend.
+    """
+    from datetime import date, timedelta
+    raw_date = request.args.get("date")
+    if raw_date:
+        try:
+            run_date = str(date.fromisoformat(raw_date))
+        except ValueError:
+            return jsonify({"error": "Invalid date format — use YYYY-MM-DD"}), 400
+    else:
+        run_date = str(date.today() - timedelta(days=1))
+
+    rows = db.get_failed_no_success(run_date)
+    for r in rows:
+        if not r.get("establishment_name"):
+            r["establishment_name"] = ESTABLISHMENT_NAMES.get(r.get("establishment_id"), "")
+
+    return jsonify({
+        "date": run_date,
+        "failed_count": len(rows),
+        "locations": rows,
+    })
+
+
 @app.route("/api/establishments")
 @login_required
 def establishments():
