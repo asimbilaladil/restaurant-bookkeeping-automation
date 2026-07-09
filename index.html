@@ -150,6 +150,44 @@
       flex-wrap: wrap;
     }
 
+    /* ─── Time saved ─── */
+    .timesaved-card {
+      padding: 20px 24px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      flex-wrap: wrap;
+      position: relative;
+      overflow: hidden;
+    }
+    .timesaved-card::before {
+      content: "";
+      position: absolute; top: 0; bottom: 0; left: 0; width: 4px;
+      background: linear-gradient(180deg, var(--green) 0%, #34d399 100%);
+    }
+    .ts-hero { display: flex; align-items: baseline; gap: 12px; padding-left: 8px; flex: 0 0 auto; }
+    .ts-hero-num {
+      font-size: 3.2rem; font-weight: 800; line-height: 1; color: var(--green);
+      font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+    }
+    .ts-hero-label { font-size: 0.82rem; font-weight: 600; color: var(--sub); line-height: 1.25; }
+    .ts-hero-label span { color: var(--muted); font-weight: 500; }
+    .ts-bars { flex: 1 1 340px; min-width: 260px; display: flex; flex-direction: column; gap: 9px; }
+    .ts-bar-row { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 12px; }
+    .ts-bar-label { font-size: 0.76rem; font-weight: 500; color: var(--sub); }
+    .ts-bar-label.ts-strong, .ts-bar-val.ts-strong { color: var(--green); font-weight: 700; }
+    .ts-track { height: 12px; background: var(--bg); border-radius: 6px; overflow: hidden; }
+    .ts-fill { height: 100%; border-radius: 6px; width: 0; transition: width 0.9s cubic-bezier(.4,0,.2,1); }
+    .ts-fill.human { background: linear-gradient(90deg, #c3cbdd 0%, #aab4cc 100%); }
+    .ts-fill.tool  { background: linear-gradient(90deg, var(--green) 0%, #34d399 100%); }
+    .ts-bar-val { font-size: 0.73rem; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .ts-caption { flex: 1 1 100%; font-size: 0.72rem; color: var(--muted); line-height: 1.45; padding-left: 8px; }
+    @media (max-width: 560px) {
+      .ts-hero { padding-left: 4px; }
+      .ts-hero-num { font-size: 2.6rem; }
+    }
+
     .field { display: flex; flex-direction: column; gap: 5px; }
     .field label {
       font-size: 0.72rem;
@@ -678,6 +716,32 @@
 <!-- ─── Main ─────────────────────────────────────────────────────────────────── -->
 <div class="container">
 
+  <!-- Time saved -->
+  <div class="card timesaved-card" id="timeSavedCard" hidden>
+    <div class="ts-hero">
+      <div class="ts-hero-num" id="tsHours">—</div>
+      <div class="ts-hero-label">hours saved<br><span>in the last 30 days</span></div>
+    </div>
+    <div class="ts-bars">
+      <div class="ts-bar-row">
+        <div class="ts-bar-label">Average person</div>
+        <div class="ts-track"><div class="ts-fill human" id="tsBarAvg"></div></div>
+        <div class="ts-bar-val">15–20 min</div>
+      </div>
+      <div class="ts-bar-row">
+        <div class="ts-bar-label">Fast person</div>
+        <div class="ts-track"><div class="ts-fill human" id="tsBarFast"></div></div>
+        <div class="ts-bar-val">5–10 min</div>
+      </div>
+      <div class="ts-bar-row">
+        <div class="ts-bar-label ts-strong">This tool</div>
+        <div class="ts-track"><div class="ts-fill tool" id="tsBarTool"></div></div>
+        <div class="ts-bar-val ts-strong">~1.2 min</div>
+      </div>
+    </div>
+    <div class="ts-caption" id="tsCaption"></div>
+  </div>
+
   <!-- Controls -->
   <div class="card controls-card">
     <div class="field">
@@ -793,7 +857,45 @@
     input.value = yesterday.toISOString().slice(0, 10);
     buildPanelList();
     updateConfigBtn();
+    loadTimeSaved();
   };
+
+  // ─── Time saved widget ──────────────────────────────────────────────────────
+  async function loadTimeSaved() {
+    // Minutes per reconciliation. Headline uses the FAST person (conservative);
+    // AVG is shown for context. Tool ~1.2 min per successful post.
+    const TOOL = 1.2, FAST = 7.5, AVG = 17.5, MAXMIN = AVG;
+    const card = document.getElementById("timeSavedCard");
+    try {
+      const r = await fetch("/api/time-saved?days=30");
+      if (!r.ok) return;
+      const d = await r.json();
+      const n = d.successes || 0;
+      if (!n) { card.hidden = true; return; }
+
+      const savedFastMin = n * (FAST - TOOL);   // headline (conservative)
+      const savedAvgMin  = n * (AVG  - TOOL);
+      const hoursFast = savedFastMin / 60;
+      document.getElementById("tsHours").textContent =
+        hoursFast >= 10 ? Math.round(hoursFast) : hoursFast.toFixed(1);
+
+      const w = m => Math.max((m / MAXMIN) * 100, 4);  // min 4% so the tool bar stays visible
+      const bar = (id, min, label) => {
+        const el = document.getElementById(id);
+        el.style.width = w(min) + "%";
+        el.title = label;
+      };
+      bar("tsBarAvg",  AVG,  `Average person · ~${AVG} min each → ${Math.round(savedAvgMin/60)} h/mo by hand`);
+      bar("tsBarFast", FAST, `Fast person · ~${FAST} min each → ${Math.round(savedFastMin/60)} h/mo by hand`);
+      bar("tsBarTool", TOOL, `This tool · ~${TOOL} min each → ${(n*TOOL/60).toFixed(1)} h/mo total`);
+
+      document.getElementById("tsCaption").textContent =
+        `${n} reconciliations auto-posted in the last 30 days, vs a fast person at 5–10 min each `
+        + `(~1.2 min automated). Doing this by hand would take about `
+        + `${Math.round(savedFastMin/60)}–${Math.round(savedAvgMin/60)} hours.`;
+      card.hidden = false;
+    } catch (e) { /* widget is non-critical — stay hidden on error */ }
+  }
 
   // ─── Panel ────────────────────────────────────────────────────────────────
   function openPanel()  { document.getElementById("panelOverlay").classList.add("open"); document.body.style.overflow = "hidden"; }

@@ -26,7 +26,7 @@ import queue
 import re
 import threading
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -160,6 +160,24 @@ def receivable_reconciliation():
 @login_required
 def dss_runs_page():
     return send_from_directory(".", "dss-runs.html")
+
+
+@app.route("/api/time-saved")
+@login_required
+def time_saved_api():
+    """Completed reconciliations in a rolling window → for the 'time saved' widget.
+
+    Returns the count of distinct (location, date) reconciliations that succeeded
+    in the last `days` days. The front end multiplies this by its human-vs-tool
+    minute assumptions to render the hours-saved figure.
+    """
+    try:
+        days = min(max(int(request.args.get("days", 30)), 1), 366)
+    except ValueError:
+        days = 30
+    since = str(date.today() - timedelta(days=days))
+    n = db.count_distinct_successes(since=since)
+    return jsonify({"successes": n, "days": days, "since": since})
 
 
 @app.route("/api/dss-runs")

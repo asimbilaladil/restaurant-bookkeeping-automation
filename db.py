@@ -179,3 +179,25 @@ def count_runs(run_date: str | None = None, establishment_id=None,
     with _lock, _connect() as conn:
         (n,) = conn.execute(f"SELECT COUNT(*) FROM dss_runs{where}", params).fetchone()
     return n
+
+
+def count_distinct_successes(since: str | None = None) -> int:
+    """Number of distinct (establishment, date) reconciliations that succeeded.
+
+    Retries and the auto-loop rewriting the same location+date count once — this
+    is the count of *daily reconciliations completed*, not raw success rows.
+    `since` is an inclusive YYYY-MM-DD lower bound on run_date (e.g. the start of
+    a rolling window); omit it for all-time.
+    """
+    clause = "WHERE status = 'success'"
+    params: list = []
+    if since:
+        clause += " AND run_date >= ?"
+        params.append(since)
+    with _lock, _connect() as conn:
+        (n,) = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            f"SELECT DISTINCT establishment_id, run_date FROM dss_runs {clause})",
+            params,
+        ).fetchone()
+    return n
