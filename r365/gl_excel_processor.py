@@ -16,7 +16,6 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
 
 log = logging.getLogger(__name__)
 
@@ -37,12 +36,16 @@ COLUMN_WIDTHS = {
 }
 
 
-def _find_header_row(ws) -> int:
-    """Locate the row that contains the column headers (Date, Type, ...)."""
+def _find_header_row(ws) -> tuple[int, int]:
+    """Locate the header row and the 1-based column index of 'Date'.
+
+    Returns (row_number, date_col_index).
+    """
     for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 25)):
         values = [str(c.value).strip().lower() if c.value else "" for c in row]
         if "date" in values and "debit" in values and "credit" in values:
-            return row[0].row
+            date_col = next(c.column for c in row if c.value and str(c.value).strip().lower() == "date")
+            return row[0].row, date_col
     raise ValueError("Could not find header row (Date/Debit/Credit) in sheet")
 
 
@@ -68,13 +71,16 @@ def process_gl_workbook(src: str | Path, dest: str | Path | None = None) -> Path
 
     _unmerge_all(ws)
 
-    header_row = _find_header_row(ws)
-    log.info("Header row detected at row %d", header_row)
+    header_row, date_col = _find_header_row(ws)
+    log.info("Header row detected at row %d, Date at col %d", header_row, date_col)
 
     if header_row > 1:
         ws.delete_rows(1, header_row - 1)
 
-    ws.delete_cols(1, 2)
+    leading_empty = date_col - 1
+    if leading_empty > 0:
+        ws.delete_cols(1, leading_empty)
+        log.info("Removed %d leading empty column(s)", leading_empty)
 
     header_cells = {
         (str(c.value).strip().lower() if c.value else ""): c.column
@@ -92,18 +98,13 @@ def process_gl_workbook(src: str | Path, dest: str | Path | None = None) -> Path
     if not debit_col:
         raise ValueError("Debit column not found after cleanup")
 
-    debit_letter = get_column_letter(debit_col)
-    credit_letter = get_column_letter(credit_col)
-
     for r in range(2, ws.max_row + 1):
         d = ws.cell(row=r, column=debit_col).value
         c = ws.cell(row=r, column=credit_col).value
         if isinstance(d, (int, float)) or isinstance(c, (int, float)):
-            ws.cell(
-                row=r,
-                column=amount_col,
-                value=f"={debit_letter}{r}-{credit_letter}{r}",
-            )
+            d_val = d if isinstance(d, (int, float)) else 0
+            c_val = c if isinstance(c, (int, float)) else 0
+            ws.cell(row=r, column=amount_col, value=round(d_val - c_val, 2))
 
     for row in ws.iter_rows():
         for cell in row:
