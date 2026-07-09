@@ -630,13 +630,15 @@ def _extract_revel_values(data: dict) -> dict:
     beverage_sales = f(class_map.get("2. Beverage", {}).get("taxable_sales", 0))
     del_row      = class_map.get("5. Delivery - Food", {})
     delivery_sales = round(f(del_row.get("taxable_sales", 0)) + f(del_row.get("untaxable_sales", 0)), 2)
-    # Other Sales (4000-07) = Revel "Unknown Class" + "4. Other Sales" classes,
-    # each summed over taxable + untaxable. R365's native import already combines
-    # these two (e.g. 10.69 + 4.99 = 15.68); we must do the same or the JE is short.
+    # Other Sales (4000-07) = Revel "Unknown Class" + "4. Other Sales" +
+    # "Extra Items" classes, each summed over taxable + untaxable. R365's native
+    # import already combines these (e.g. 10.69 + 4.99 = 15.68); we must do the
+    # same or the JE is short (e.g. a stray "Extra Items" line leaves it off by
+    # its taxable_sales amount, which surfaces as an unbalanced Cash Over/Short plug).
     other_sales = round(sum(
         f(class_map.get(cls, {}).get("taxable_sales", 0)) +
         f(class_map.get(cls, {}).get("untaxable_sales", 0))
-        for cls in ("Unknown Class", "4. Other Sales")
+        for cls in ("Unknown Class", "4. Other Sales", "Extra Items")
     ), 2)
 
     # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
