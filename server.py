@@ -26,7 +26,7 @@ import queue
 import re
 import threading
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date
 from functools import wraps
 from pathlib import Path
 
@@ -165,19 +165,16 @@ def dss_runs_page():
 @app.route("/api/time-saved")
 @login_required
 def time_saved_api():
-    """Completed reconciliations in a rolling window → for the 'time saved' widget.
+    """Completed reconciliations this calendar month → for the 'time saved' widget.
 
     Returns the count of distinct (location, date) reconciliations that succeeded
-    in the last `days` days. The front end multiplies this by its human-vs-tool
-    minute assumptions to render the hours-saved figure.
+    since the 1st of the current month (month-to-date). The front end multiplies
+    this by its human-vs-tool minute assumptions to render the hours-saved figure.
     """
-    try:
-        days = min(max(int(request.args.get("days", 30)), 1), 366)
-    except ValueError:
-        days = 30
-    since = str(date.today() - timedelta(days=days))
+    today = date.today()
+    since = str(today.replace(day=1))
     n = db.count_distinct_successes(since=since)
-    return jsonify({"successes": n, "days": days, "since": since})
+    return jsonify({"successes": n, "since": since, "month": today.strftime("%Y-%m")})
 
 
 @app.route("/api/dss-runs")

@@ -720,7 +720,7 @@
   <div class="card timesaved-card" id="timeSavedCard" hidden>
     <div class="ts-hero">
       <div class="ts-hero-num" id="tsHours">—</div>
-      <div class="ts-hero-label">hours saved<br><span>in the last 30 days</span></div>
+      <div class="ts-hero-label">hours saved<br><span>this month</span></div>
     </div>
     <div class="ts-bars">
       <div class="ts-bar-row">
@@ -867,7 +867,7 @@
     const TOOL = 1.2, FAST = 7.5, AVG = 17.5, MAXMIN = AVG;
     const card = document.getElementById("timeSavedCard");
     try {
-      const r = await fetch("/api/time-saved?days=30");
+      const r = await fetch("/api/time-saved");
       if (!r.ok) return;
       const d = await r.json();
       const n = d.successes || 0;
@@ -890,7 +890,7 @@
       bar("tsBarTool", TOOL, `This tool · ~${TOOL} min each → ${(n*TOOL/60).toFixed(1)} h/mo total`);
 
       document.getElementById("tsCaption").textContent =
-        `${n} reconciliations auto-posted in the last 30 days, vs a fast person at 5–10 min each `
+        `${n} reconciliations auto-posted this month, vs a fast person at 5–10 min each `
         + `(~1.2 min automated). Doing this by hand would take about `
         + `${Math.round(savedFastMin/60)}–${Math.round(savedAvgMin/60)} hours.`;
       card.hidden = false;
