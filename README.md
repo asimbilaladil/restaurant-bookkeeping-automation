@@ -120,7 +120,7 @@ Each R365 Journal Entry account is mapped to one or more Revel JSON fields. The 
 | **4000-011 Food Sales-Tax Exempt** *(optional row, added only when needed)* | Debit | `abs(sales_data.net_sales_untaxed)` — added as a new JE row with comment "Untaxed Net Sales". Also adds this amount on top of Food Sales. | `sales_data.net_sales_untaxed` |
 | **4000-02 Beverage Sales** | Credit | `product_mix_data["2. Beverage"].taxable_sales` | `product_mix_data` — row where `product_class == "2. Beverage"` |
 | **4000-08 Food Delivery Sales** | Credit | `product_mix_data["5. Delivery - Food"].taxable_sales` + `product_mix_data["5. Delivery - Food"].untaxable_sales` | `product_mix_data` — row where `product_class == "5. Delivery - Food"` |
-| **4000-07 Other Sales** | Credit | (`product_mix_data["Unknown Class"].taxable_sales` + `.untaxable_sales`) + (`product_mix_data["4. Other Sales"].taxable_sales` + `.untaxable_sales`) — i.e. **both** the `Unknown Class` **and** `4. Other Sales` classes summed together (R365's native import combines them, e.g. 10.69 + 4.99 = 15.68). | `product_mix_data` — rows where `product_class == "Unknown Class"` or `"4. Other Sales"` |
+| **4000-07 Other Sales** | Credit | Sum of `taxable_sales` + `untaxable_sales` across the `Unknown Class`, `4. Other Sales`, **and** `Extra Items` classes (R365's native import combines them, e.g. 10.69 + 4.99 = 15.68). Omitting any of these leaves the JE short by that amount, which surfaces as an unbalanced Cash Over/Short plug. | `product_mix_data` — rows where `product_class` is `"Unknown Class"`, `"4. Other Sales"`, or `"Extra Items"` |
 | **2240-000 Sales Tax Payable** | Credit | `tax_data[totals_row].tax` | `tax_data` — first row where `row_type == "totals_row"` |
 | **70250 Credit Card Fees** | Credit | `sales_data.adj_credit_tips` | `sales_data` |
 | **2301 Employee Tips Payable** | Debit | `sales_data.adj_credit_tips` | `sales_data` |
@@ -352,6 +352,18 @@ Fill Journal Entries for multiple establishments sequentially. Streams SSE event
 
 ### `GET /api/establishments`
 Returns all establishment IDs and display names.
+
+---
+
+### `GET /api/time-saved`
+Powers the "time saved this month" widget on the Daily Sales Reconciliation page. Returns the count of **distinct (establishment, date) reconciliations that succeeded** since the 1st of the current calendar month (retries / auto-loop reruns of the same location+date count once).
+
+**Response:**
+```json
+{ "successes": 73, "since": "2026-07-01", "month": "2026-07" }
+```
+
+The UI multiplies `successes` by its human-vs-tool per-reconciliation minute assumptions (tool ~1.2 min; fast person 5–10 min; average person 15–20 min) to render the hours-saved figure.
 
 ---
 
