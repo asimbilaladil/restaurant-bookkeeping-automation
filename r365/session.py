@@ -33,9 +33,12 @@ def _dismiss_chrome_dialogs(page: Page) -> None:
 # logins leave them behind; they accumulate run-over-run until the cookie header
 # overflows nginx's buffer and R365 answers every request with
 # "400 Bad Request — Request Header Or Cookie Too Large". They carry no session
-# state, so pruning them is always safe — and it preserves the real auth cookie
-# so an existing login is reused instead of re-authenticating every run.
-_TRANSIENT_COOKIE_PREFIXES = (".AspNetCore.Correlation", ".AspNetCore.OpenIdConnect.nonce")
+# state, so pruning them is always safe. (R365 issues its auth cookie as a session
+# cookie, so it never reaches disk and every run logs in afresh — one nonce per
+# run, which is exactly what this prune has to keep up with.)
+# Matched case-insensitively: ASP.NET Core ships ".AspNetCore.OpenIdConnect.Nonce."
+# with a capital N, so these are kept lowercase and compared against name.lower().
+_TRANSIENT_COOKIE_PREFIXES = (".aspnetcore.correlation", ".aspnetcore.openidconnect.nonce")
 
 
 def _page_is_cookie_400(page: Page) -> bool:
@@ -56,7 +59,7 @@ def _prune_transient_cookies(context) -> int:
         log.warning("Could not read cookies to prune: %s", e)
         return 0
     keep = [c for c in cookies
-            if not any(c.get("name", "").startswith(p) for p in _TRANSIENT_COOKIE_PREFIXES)]
+            if not c.get("name", "").lower().startswith(_TRANSIENT_COOKIE_PREFIXES)]
     removed = len(cookies) - len(keep)
     if removed:
         try:
@@ -69,7 +72,7 @@ def _prune_transient_cookies(context) -> int:
     return removed
 
 
-def login_r365(page: Page) -> None:
+def login_r365(page: Page, context, _retry: bool = True) -> None:
     log.info("Logging into R365 at: %s", page.url)
     page.wait_for_selector("#Username", timeout=30_000)
     page.fill("#Username", R365_USER)
@@ -95,7 +98,17 @@ def login_r365(page: Page) -> None:
     # Verify we genuinely reached the app — not an nginx 400 or a bounce back to
     # the login page. Raising here surfaces a real failure instead of a fake
     # "Login complete" that later dies as "DSS iframe not found".
+    # The handshake mints a fresh nonce on top of whatever the jar already holds,
+    # so the header can tip over nginx's buffer here even though the opening
+    # goto() was fine. A full clear costs one re-login and always fits; _retry
+    # bounds it to a single attempt so a genuinely broken login still fails loudly.
     if _page_is_cookie_400(page):
+        if _retry:
+            log.warning("nginx 400 'Cookie Too Large' after submit — clearing cookies, retrying login")
+            context.clear_cookies()
+            page.goto(R365_URL, timeout=60_000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2_000)
+            return login_r365(page, context, _retry=False)
         raise RuntimeError("Login failed — nginx 400 'Cookie Too Large' after submit")
     if "identity.restaurant365.com" in page.url or "/Account/Login" in page.url.lower():
         raise RuntimeError(f"Login failed — still on the identity provider at {page.url}")
@@ -126,9 +139,11 @@ def ensure_logged_in_r365(page: Page, context) -> None:
         log.info("Not logged in — logging in now (first time or session expired)")
         page.goto(R365_URL, timeout=60_000, wait_until="domcontentloaded")
         page.wait_for_timeout(2_000)
-        login_r365(page)
-        # The fresh login just created a new correlation/nonce pair — prune them
-        # now so they never accumulate again.
-        _prune_transient_cookies(context)
+        try:
+            login_r365(page, context)
+        finally:
+            # The login just created a new correlation/nonce pair — prune it now so
+            # it never accumulates. A *failed* login orphans one too, hence finally.
+            _prune_transient_cookies(context)
     else:
         log.info("Already logged in — reusing existing session at %s", page.url)
