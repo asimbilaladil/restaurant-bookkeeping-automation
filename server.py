@@ -782,7 +782,18 @@ def _extract_revel_values(data: dict) -> dict:
     # total_payments  = what was actually collected
     net_account_for = f(sd.get("net_account_for", 0))
     total_payments  = f(sd.get("total_payments", 0))
-    raw_variance    = round(net_account_for - total_payments, 2)
+
+    # R365's own "Over / Short" row is read-only and derived from *gross* cash
+    # (cash_for_sales), so a cash refund is silently buried inside it — at Airtex
+    # on 2026-07-08 its 13.44 was 12.55 of refund plus 0.89 of true variance, and
+    # the JE came out 12.55 short. Fold the refund into our variance row (as a
+    # credit) so the two 8000-06 rows net to the real over/short.
+    #
+    # cash_refunds ONLY, never refunds_total: credit_total is already net of card
+    # refunds (credit_for_sales - credit_refunds == credit_total), so subtracting
+    # those here would double-count them and unbalance locations that work today.
+    cash_refunds    = f(sd.get("cash_refunds", 0))
+    raw_variance    = round(net_account_for - total_payments - cash_refunds, 2)
     cash_over_short = abs(raw_variance)
     # If payments > net: overage → credit Cash O/S; if payments < net: shortage → debit
     cash_over_short_sign = "credit" if raw_variance < 0 else "debit"
@@ -801,6 +812,7 @@ def _extract_revel_values(data: dict) -> dict:
         "doordash":             doordash,
         "grubhub":              grubhub,
         "undeposited_funds":    undeposited_funds,
+        "cash_refunds":         cash_refunds,
         "comps":                comps,
         "item_discounts":       item_discounts,  # fallback only; journal_entry.py recalculates using R365 promotions
         "revel_discounts_total": revel_discounts_total,
