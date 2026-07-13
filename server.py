@@ -54,6 +54,22 @@ _LOGIN_PASSWORD_HASH = os.environ["LOGIN_PASSWORD_HASH"]
 _DSS_RUNS_API_TOKEN = os.environ.get("DSS_RUNS_API_TOKEN", "")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse a boolean feature-flag env var. Accepts 1/true/yes/on (any case)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Feature flag for commit 4e2b1c0 (Net cash refunds out of the 8000-06 Cash
+# Over/Short plug). Defaults ON — the fix is active. If a future location's cash
+# refund is mishandled and unbalances every location's run, set
+# NET_CASH_REFUNDS=false in the environment and restart to revert to the old
+# behavior (raw_variance = net_account_for - total_payments) without a redeploy.
+_NET_CASH_REFUNDS = _env_flag("NET_CASH_REFUNDS", True)
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -792,8 +808,11 @@ def _extract_revel_values(data: dict) -> dict:
     # cash_refunds ONLY, never refunds_total: credit_total is already net of card
     # refunds (credit_for_sales - credit_refunds == credit_total), so subtracting
     # those here would double-count them and unbalance locations that work today.
+    # Gated by the NET_CASH_REFUNDS feature flag so it can be disabled (revert to
+    # net_account_for - total_payments) without a redeploy if it ever misbehaves.
     cash_refunds    = f(sd.get("cash_refunds", 0))
-    raw_variance    = round(net_account_for - total_payments - cash_refunds, 2)
+    refund_offset   = cash_refunds if _NET_CASH_REFUNDS else 0
+    raw_variance    = round(net_account_for - total_payments - refund_offset, 2)
     cash_over_short = abs(raw_variance)
     # If payments > net: overage → credit Cash O/S; if payments < net: shortage → debit
     cash_over_short_sign = "credit" if raw_variance < 0 else "debit"
