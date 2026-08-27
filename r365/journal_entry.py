@@ -13,6 +13,7 @@ from datetime import date
 from playwright.sync_api import sync_playwright, Page
 
 from .session import R365_USER, R365_PASS, PROFILE_DIR, ensure_logged_in_r365
+from . import api_client
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +94,50 @@ def _fill_je_cell(frame, account_text: str, field_name: str, value: float, no_co
         return False
 
 
-def _read_je_cell_value(frame, account_text: str, col: str) -> float:
-    """Read the current debit or credit value from a JE row by account text."""
+def _api_lookup(api_lines: dict | None, account_text: str, field: str) -> float | None:
+    """
+    Look up the current debit/credit value for an account from a pre-fetched
+    api_client.je_lines_by_account() dict, instead of scraping the DOM.
+    Returns None when the API data can't answer confidently (account absent,
+    or genuinely ambiguous across duplicate rows for the same account number)
+    so the caller can fall back to reading the live DOM.
+    """
+    if not api_lines:
+        return None
+    m = re.match(r"^[\w\-]+", account_text)
+    acct_num = m.group() if m else account_text
+    candidates = [
+        v for k, v in api_lines.items()
+        if k == acct_num or k.startswith(acct_num + "|")
+    ]
+    if not candidates:
+        return None
+    nonzero = [c for c in candidates if c.get(field, 0) not in (0, 0.0)]
+    if len(nonzero) == 1:
+        return round(nonzero[0][field], 2)
+    if len(nonzero) > 1:
+        # Ambiguous — prefer the row without a comment (the "plain" one), since
+        # that's what account_text without a comment qualifier usually means.
+        plain = [c for c in nonzero if not c.get("comment")]
+        if len(plain) == 1:
+            return round(plain[0][field], 2)
+        return None  # genuinely ambiguous — let DOM fallback decide
+    return 0.0  # account exists in the JE but this field is legitimately zero
+
+
+def _read_je_cell_value(frame, account_text: str, col: str, api_lines: dict | None = None) -> float:
+    """Read the current debit or credit value from a JE row by account text.
+
+    Prefers a pre-fetched R365 Public API value (api_lines, from
+    api_client.je_lines_by_account) when it can answer unambiguously —
+    avoids parsing formatted grid text — and falls back to scraping the
+    live Kendo grid DOM otherwise (API unavailable, or ambiguous duplicate
+    account rows the API lookup couldn't disambiguate).
+    """
+    api_val = _api_lookup(api_lines, account_text, col)
+    if api_val is not None:
+        return api_val
+
     col_idx = 3 if col == "credit" else 2
     try:
         val = frame.evaluate(f"""
@@ -649,6 +692,8 @@ def fill_journal_entry(
     screenshot_path: str = "/tmp/r365_je_filled.png",
     attachment_path: str | None = None,
     attachment_screenshot_path: str | None = None,
+    location_name: str | None = None,
+    target_date: date | None = None,
 ) -> tuple[float, str, str]:
     """
     Fill R365 Journal Entry from Revel data.
@@ -673,6 +718,40 @@ def fill_journal_entry(
         cash_over_short_sign    → 'debit' or 'credit'
     """
     active.wait_for_timeout(3_000)
+
+    # Pre-fetch the current R365-side JE via the Public API, once, to use as
+    # the read side of every reconcile comparison below instead of scraping
+    # the Kendo grid DOM (which involves parsing formatted text like
+    # "1,057.38" and has been observed to race Angular's render). Falls back
+    # to DOM scraping per-value (see _read_je_cell_value) whenever the API is
+    # unavailable, the JE hasn't been generated yet, or an account's rows are
+    # ambiguous — this fetch failing is never fatal to the run.
+    api_lines = None
+    if location_name and target_date:
+        try:
+            loc_id = api_client.find_location_id(location_name)
+            if loc_id:
+                api_je = api_client.get_je_for_date(loc_id, target_date)
+                if api_je:
+                    api_lines = api_client.je_lines_by_account(api_je)
+                    log.info(
+                        "R365 API: found JE %s for %s %s (debit=%.2f credit=%.2f) — "
+                        "using as read-side source",
+                        api_je.get("number"), location_name, target_date,
+                        api_je.get("debitTotal", 0) or 0, api_je.get("creditTotal", 0) or 0,
+                    )
+                else:
+                    log.info(
+                        "R365 API: no DSS JE found yet for %s %s — falling back to DOM reads",
+                        location_name, target_date,
+                    )
+            else:
+                log.warning(
+                    "R365 API: location not found for name %r — falling back to DOM reads",
+                    location_name,
+                )
+        except Exception as e:
+            log.warning("R365 API lookup failed (%s) — falling back to DOM reads", e)
 
     je_frame = None
     for f in active.frames:
@@ -699,20 +778,22 @@ def fill_journal_entry(
         log.warning("JE grid rows not detected within 15s: %s", e)
 
     # ── Self-heal a previously-saved tax-exempt row on the wrong side ──────────
-    # Earlier versions booked 4000-011 (a revenue account) as a DEBIT. If a saved
-    # JE still has it on the debit side (or with the wrong amount), the dedup
-    # guard further down refuses to touch it and the entry stays mis-booked.
-    # Recreating the JE wipes our manual rows back to R365's native generation so
-    # the corrected credit-side fill can apply cleanly. Done before the fill so it
-    # self-heals on re-run rather than getting stuck.
+    # 4000-011 is sign-driven: positive net_sales_untaxed → credit, negative →
+    # debit (see _extract_revel_values). If a saved JE has it on the OTHER side,
+    # or with the wrong amount, the dedup guard further down refuses to touch it
+    # and the entry stays mis-booked. Recreating the JE wipes our manual rows back
+    # to R365's native generation so the corrected fill can apply cleanly. Done
+    # before the fill so it self-heals on re-run rather than getting stuck.
+    heal_field  = revel_values.get("tax_exempt_field")
     heal_amount = round(float(revel_values.get("tax_exempt_amount") or 0), 2)
-    if heal_amount:
-        stale_debit  = _read_je_cell_value(je_frame, "4000-011", "debit")
-        stale_credit = _read_je_cell_value(je_frame, "4000-011", "credit")
-        if stale_debit or (stale_credit and stale_credit != heal_amount):
+    if heal_field and heal_amount:
+        wrong_field  = "credit" if heal_field == "debit" else "debit"
+        wrong_val    = _read_je_cell_value(je_frame, "4000-011", wrong_field, api_lines=api_lines)
+        right_val    = _read_je_cell_value(je_frame, "4000-011", heal_field, api_lines=api_lines)
+        if wrong_val or (right_val and right_val != heal_amount):
             log.warning(
-                "Stale 4000-011 row (debit=%.2f credit=%.2f, want credit=%.2f) — recreating JE to reset",
-                stale_debit, stale_credit, heal_amount,
+                "Stale 4000-011 row (%s=%.2f present, want %s=%.2f) — recreating JE to reset",
+                wrong_field, wrong_val, heal_field, heal_amount,
             )
             _recreate_journal_entry(active)
             # Switch back to the Journal Entry tab and re-detect the grid frame.
@@ -780,7 +861,7 @@ def fill_journal_entry(
     # ── Read all current R365 values first, then verify and write if different ──
     def _reconcile(account, field, revel_val):
         """Read R365 value, compare to Revel. Write only if different."""
-        r365_val = _read_je_cell_value(je_frame, account, field)
+        r365_val = _read_je_cell_value(je_frame, account, field, api_lines=api_lines)
         revel_val = round(float(revel_val or 0), 2)
         if r365_val == revel_val:
             log.info("  MATCH    %-45s %s = %.2f (no write needed)", account, field, r365_val)
@@ -790,10 +871,10 @@ def fill_journal_entry(
                 _fill_je_cell(je_frame, account, field, revel_val)
 
     # Read marketplace + promotions values (R365 pre-fills from platform data)
-    r365_promotions = _read_je_cell_value(je_frame, "4500-03 - Promotions", "debit")
-    r365_uber_eats  = _read_je_cell_value(je_frame, "1245-12 - A/R-UberEats", "debit")
-    r365_doordash   = _read_je_cell_value(je_frame, "1245-03 - A/R-DoorDash", "debit")
-    r365_grubhub    = _read_je_cell_value(je_frame, "1245-08 - A/R-GrubHub", "debit")
+    r365_promotions = _read_je_cell_value(je_frame, "4500-03 - Promotions", "debit", api_lines=api_lines)
+    r365_uber_eats  = _read_je_cell_value(je_frame, "1245-12 - A/R-UberEats", "debit", api_lines=api_lines)
+    r365_doordash   = _read_je_cell_value(je_frame, "1245-03 - A/R-DoorDash", "debit", api_lines=api_lines)
+    r365_grubhub    = _read_je_cell_value(je_frame, "1245-08 - A/R-GrubHub", "debit", api_lines=api_lines)
     log.info("R365 current — Promotions: %.2f, UberEats: %.2f, DoorDash: %.2f, GrubHub: %.2f",
              r365_promotions, r365_uber_eats, r365_doordash, r365_grubhub)
 
@@ -926,7 +1007,7 @@ def fill_journal_entry(
     if tax_exempt_field and tax_exempt_amount:
         try:
             # Check if row already exists (catches duplicate-add across re-runs if save persisted)
-            existing = _read_je_cell_value(je_frame, "4000-011", tax_exempt_field)
+            existing = _read_je_cell_value(je_frame, "4000-011", tax_exempt_field, api_lines=api_lines)
             log.info("4000-011 current R365 value: %.2f (want %.2f)", existing, tax_exempt_amount)
             if existing == round(tax_exempt_amount, 2):
                 log.info("✅ 4000-011 Food Sales-tax exempt already correct: %.2f", tax_exempt_amount)
@@ -956,21 +1037,28 @@ def fill_journal_entry(
                     je_frame.wait_for_timeout(1200)
                     acct_input.press("Enter")
                     je_frame.wait_for_timeout(500)
-                    # 4000-011 is a revenue account → tax_exempt_field is "credit".
-                    # Column order is Account → Debit → Credit → Comment, so Tab
-                    # past Debit into the Credit field before typing the amount.
-                    acct_input.press("Tab")        # → Debit field (skip)
-                    active.keyboard.press("Tab")   # → Credit field
+                    # 4000-011 side is sign-driven (tax_exempt_field): a positive
+                    # net_sales_untaxed is exempt revenue → CREDIT; a negative one
+                    # is an exempt reduction → DEBIT. Column order is
+                    # Account → Debit → Credit → Comment, so Tab once into Debit,
+                    # and a second time into Credit only when we want the credit side.
+                    acct_input.press("Tab")            # → Debit field
+                    if tax_exempt_field == "credit":
+                        active.keyboard.press("Tab")   # → Credit field
                     active.keyboard.type(f"{tax_exempt_amount:.2f}")
                     je_frame.wait_for_timeout(300)
-                    # Tab to Comment and fill
-                    active.keyboard.press("Tab")   # → Comment
+                    # Tab to Comment and fill (from Debit: Debit→Credit→Comment is
+                    # two Tabs; from Credit: one Tab).
+                    active.keyboard.press("Tab")
+                    if tax_exempt_field == "debit":
+                        active.keyboard.press("Tab")   # Debit → Credit → Comment
                     active.keyboard.type("Untaxed Net Sales")
                     je_frame.wait_for_timeout(300)
                     # Click Add — scoped to grid toolbar
                     je_frame.locator('.k-grid-toolbar button:has-text("Add")').click()
                     je_frame.wait_for_timeout(1000)
-                    log.info("✅ 4000-011 row added: %.2f credit 'Untaxed Net Sales'", tax_exempt_amount)
+                    log.info("✅ 4000-011 row added: %.2f %s 'Untaxed Net Sales'",
+                             tax_exempt_amount, tax_exempt_field)
         except Exception as e:
             log.warning("Could not add 4000-011 tax-exempt row: %s", e)
 
@@ -982,7 +1070,7 @@ def fill_journal_entry(
     other_sales = round(float(revel_values.get("other_sales") or 0), 2)
     if other_sales:
         try:
-            existing = _read_je_cell_value(je_frame, "4000-07", "credit")
+            existing = _read_je_cell_value(je_frame, "4000-07", "credit", api_lines=api_lines)
             log.info("4000-07 current R365 value: %.2f (want %.2f)", existing, other_sales)
             if existing == other_sales:
                 log.info("✅ 4000-07 Other Sales already correct: %.2f", other_sales)
@@ -1020,7 +1108,7 @@ def fill_journal_entry(
     # Discount fields — only write if variance exists (item_discounts > 0)
     # Must target the plain (no-comment) 4500-01 row to avoid overwriting "Gift Card Redeemed" etc.
     if item_discounts:
-        r365_plain = _read_je_cell_value(je_frame, "4500-01 - Discounts", "debit")
+        r365_plain = _read_je_cell_value(je_frame, "4500-01 - Discounts", "debit", api_lines=api_lines)
         if r365_plain != item_discounts:
             log.info("  MISMATCH %-45s debit: R365=%.2f Revel=%.2f → writing (no_comment)", "4500-01 - Discounts", r365_plain, item_discounts)
             _fill_je_cell(je_frame, "4500-01 - Discounts", "debit", item_discounts, no_comment=True)
@@ -1037,7 +1125,7 @@ def fill_journal_entry(
     cash_over_short_sign = revel_values.get("cash_over_short_sign", "credit")
 
     if cash_over_short and cash_over_short > 0:
-        existing_cos = _read_je_cell_value(je_frame, "8000-06", cash_over_short_sign)
+        existing_cos = _read_je_cell_value(je_frame, "8000-06", cash_over_short_sign, api_lines=api_lines)
         if existing_cos == cash_over_short:
             log.info("✅ 8000-06 Cash Over/Short already correct: %.2f", cash_over_short)
         else:
@@ -1293,6 +1381,8 @@ def go_to_daily_sales_summary(
                             screenshot_path=screenshot_path,
                             attachment_path=attachment_path,
                             attachment_screenshot_path=attachment_screenshot_path,
+                            location_name=location_name,
+                            target_date=target_date,
                         )
                         je_diff = je_diff or 0.0
 
