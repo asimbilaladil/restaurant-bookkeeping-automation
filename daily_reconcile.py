@@ -21,9 +21,11 @@ from datetime import date, datetime, timedelta, timezone
 # We reuse its helpers (_extract_revel_values, _record_run, _entity_log) so the
 # recorded runs are identical to the web flow.
 import db
+import log_safety
 import server
 from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
 from r365 import open_r365_journal_entry
+from reconcile_lock import R365BrowserLock, LockBusyError, BrowserLockBusyError
 
 log = logging.getLogger("daily_reconcile")
 
@@ -64,7 +66,13 @@ def main() -> int:
              target_date, len(pending), len(DEFAULT_ESTABLISHMENTS),
              [ESTABLISHMENT_NAMES.get(e, e) for e in pending])
 
-    results = fetch_reports(target_date, pending)
+    try:
+        results = fetch_reports(target_date, pending)
+    except Exception as exc:
+        # safe_exc(), not str(exc): see log_safety.py -- a Revel network
+        # timeout's message can embed the full request (cookies, id_token).
+        log.error("fetch_reports failed for the whole batch: %s", log_safety.safe_exc(exc))
+        return 1
     log.info("Fetched Revel data for %d establishment(s)", len(results))
 
     ok = failed = errored = 0
@@ -84,10 +92,15 @@ def main() -> int:
         pdf_path = r.get("pdf_path")
 
         try:
-            with server._entity_log(name, target_date) as log_path:
-                result = open_r365_journal_entry(
-                    target_date, r365_name, revel_values, pdf_path
-                )
+            # Shared with server.py's web routes and reconcile_cli.py — this
+            # cron script is currently disabled (see crontab.backup note),
+            # but the lock must still be here so re-enabling it later can't
+            # silently reintroduce the browser-profile race.
+            with R365BrowserLock(est_id, target_date, source="daily_reconcile"):
+                with server._entity_log(name, target_date) as log_path:
+                    result = open_r365_journal_entry(
+                        target_date, r365_name, revel_values, pdf_path
+                    )
             if "error" in result:
                 errored += 1
                 log.error("est %s (%s) → error: %s", est_id, name, result["error"])
@@ -114,8 +127,9 @@ def main() -> int:
                                    log_filename=log_path.name)
         except Exception as exc:
             errored += 1
-            log.error("est %s (%s) → exception: %s", est_id, name, exc)
-            server._record_run(est_id, name, target_date, "error", error=str(exc))
+            safe_msg = log_safety.safe_exc(exc)
+            log.error("est %s (%s) → exception: %s", est_id, name, safe_msg)
+            server._record_run(est_id, name, target_date, "error", error=safe_msg)
 
     log.info("=== Daily reconcile DONE — date=%s: %d balanced, %d unbalanced, %d errored ===",
              target_date, ok, failed, errored)

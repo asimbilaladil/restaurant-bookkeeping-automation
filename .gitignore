@@ -9,3 +9,6 @@ venv/
 *.db
 server.log
 logs/
+locks/
+env_backups/
+.env.*.bak

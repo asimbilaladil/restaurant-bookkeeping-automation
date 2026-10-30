@@ -15,6 +15,7 @@ from datetime import date, timedelta
 
 from playwright.sync_api import sync_playwright, BrowserContext
 
+import log_safety
 from .establishments import DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES
 from .session import STATE_FILE, BASE_URL, ensure_logged_in
 
@@ -127,8 +128,13 @@ def fetch_establishment_report(
         data = resp.json()
         log.info("  est=%d — OK (%d bytes)", establishment_id, len(resp.body()))
     except Exception as exc:
-        log.error("  Failed to parse JSON for establishment %d: %s", establishment_id, exc)
-        return {"establishment_id": establishment_id, "error": str(exc), "data": None}
+        # safe_exc(), not str(exc): a parse failure here is often downstream
+        # of a network-layer exception whose message embeds the full request
+        # (Cookie/Authorization headers, session id, id_token) — never let
+        # that reach logs, the UI, or the dss_runs.db error column raw.
+        safe_msg = log_safety.safe_exc(exc)
+        log.error("  Failed to parse JSON for establishment %d: %s", establishment_id, safe_msg)
+        return {"establishment_id": establishment_id, "error": safe_msg, "data": None}
 
     # Session is still switched to this establishment — download pdf with same params
     pdf_path = None
@@ -137,7 +143,7 @@ def fetch_establishment_report(
             context, establishment_id, range_from, range_to, start_date
         )
     except Exception as exc:
-        log.warning("  pdf download failed for establishment %d: %s", establishment_id, exc)
+        log.warning("  pdf download failed for establishment %d: %s", establishment_id, log_safety.safe_exc(exc))
 
     return {
         "establishment_id": establishment_id,
@@ -191,8 +197,11 @@ def fetch_reports(
             try:
                 result = fetch_establishment_report(context, est_id, start_date)
             except Exception as exc:
-                log.error("Unhandled error for establishment %d: %s", est_id, exc)
-                result = {"establishment_id": est_id, "error": str(exc), "data": None}
+                # See log_safety.py: a Playwright network-timeout message can
+                # embed the full request, including cookies and id_token.
+                safe_msg = log_safety.safe_exc(exc)
+                log.error("Unhandled error for establishment %d: %s", est_id, safe_msg)
+                result = {"establishment_id": est_id, "error": safe_msg, "data": None}
 
             results.append(result)
 

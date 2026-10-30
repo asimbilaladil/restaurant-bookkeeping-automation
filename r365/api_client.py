@@ -123,12 +123,12 @@ def get_transactions(
 _DSS_JE_MARKER_ACCOUNTS = {"2240-000", "4000-01", "4000-02"}
 
 
-def get_je_for_date(location_id: str, target_date: date, window_days: int = 3) -> dict | None:
+def find_dss_je_matches(location_id: str, target_date: date, window_days: int = 3) -> list[dict]:
     """
-    Return the DSS-generated JournalEntry transaction (with details) whose
-    dateOfBusiness matches target_date for this location, or None if not found.
-    Queries a window around target_date since narrow single-day ranges have
-    returned empty in testing.
+    Return ALL DSS-generated JournalEntry transactions (with details) whose
+    dateOfBusiness matches target_date for this location — uncollapsed, so a
+    caller can detect ambiguity (more than one match) itself rather than
+    silently accepting whichever get_je_for_date() would pick.
 
     A single date/location can have MULTIPLE JournalEntry transactions (e.g. a
     same-day payroll JE posting only to labor accounts, or an empty placeholder)
@@ -147,12 +147,30 @@ def get_je_for_date(location_id: str, target_date: date, window_days: int = 3) -
         t for t in same_day
         if any((d.get("glAccount") or {}).get("number") in _DSS_JE_MARKER_ACCOUNTS for d in (t.get("details") or []))
     ]
+    if not matches and same_day:
+        log.warning(
+            "No DSS-marker JE among %d same-day JournalEntry txn(s) for location=%s date=%s: %s",
+            len(same_day), location_id, target_date, [t["number"] for t in same_day],
+        )
+    return matches
+
+
+def get_je_for_date(location_id: str, target_date: date, window_days: int = 3) -> dict | None:
+    """
+    Return the DSS-generated JournalEntry transaction (with details) whose
+    dateOfBusiness matches target_date for this location, or None if not found.
+    Queries a window around target_date since narrow single-day ranges have
+    returned empty in testing.
+
+    When find_dss_je_matches() returns more than one match, this picks the
+    most recently modified one and logs a warning — kept for backward
+    compatibility with existing callers (fill_journal_entry's read-side
+    lookup) that just want "the" current JE. Callers that need to detect and
+    react to ambiguity themselves (e.g. reconcile_cli.py's safety gate)
+    should call find_dss_je_matches() directly instead.
+    """
+    matches = find_dss_je_matches(location_id, target_date, window_days)
     if not matches:
-        if same_day:
-            log.warning(
-                "No DSS-marker JE among %d same-day JournalEntry txn(s) for location=%s date=%s: %s",
-                len(same_day), location_id, target_date, [t["number"] for t in same_day],
-            )
         return None
     if len(matches) > 1:
         log.warning(
@@ -160,7 +178,7 @@ def get_je_for_date(location_id: str, target_date: date, window_days: int = 3) -
             "returning most recently modified",
             location_id, target_date, [m["number"] for m in matches],
         )
-        matches.sort(key=lambda t: t.get("modifiedOn") or "", reverse=True)
+        matches = sorted(matches, key=lambda t: t.get("modifiedOn") or "", reverse=True)
     return matches[0]
 
 

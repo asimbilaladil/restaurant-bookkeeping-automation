@@ -447,8 +447,10 @@ The non-obvious calculations (the *full* account→field table is in the
 [README](README.md#field-calculations-revel--r365)):
 
 - **Food Sales** = `taxable_sales + untaxable_sales` of the `"1. Food"` product
-  class; **untaxed net sales** (`sales_data.net_sales_untaxed`) is folded in and
-  also added as a separate `4000-011` row.
+  class. **Untaxed net sales** (`sales_data.net_sales_untaxed`) is added as a
+  separate `4000-011` row whose side is **sign-driven**: positive → Credit (and
+  reclassified out of Food Sales); negative → Debit (Food Sales left at the full
+  class total, amount excluded from the discount figure to avoid double-counting).
 - **Credit Cards AR** = `credit_total + credit_tips_total`.
 - **Marketplace** (UberEats/DoorDash/GrubHub) — matched by name out of
   `sales_data.custom_payments`.

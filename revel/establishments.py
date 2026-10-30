@@ -1,6 +1,7 @@
 ESTABLISHMENTS: list[tuple[int, str]] = [
     (32, "LCF Airtex"),
     (14, "LCF Beaumont"),
+    (54, "LCF Cypress"),
     (48, "LCF Downtown Houston"),
     (7,  "LCF Ella"),
     (6,  "LCF Katy"),

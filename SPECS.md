@@ -194,7 +194,7 @@ The mapping lives in `server.py::_extract_revel_values`. Reference table:
 | R365 acct | Field | Revel calculation |
 |---|---|---|
 | 4000-01 Food Sales           | `food_sales`           | `product_mix_data["1. Food"].taxable_sales + .untaxable_sales` |
-| 4000-011 Food Sales-Tax Exempt (only if ≠ 0) | `tax_exempt_amount` | `abs(sales_data.net_sales_untaxed)` |
+| 4000-011 Food Sales-Tax Exempt (only if ≠ 0) | `tax_exempt_amount` (= `abs(net_sales_untaxed)`), `tax_exempt_field` | `sales_data.net_sales_untaxed` — **sign-driven side:** `>0` → **Credit** (reclassified out of Food Sales); `<0` → **Debit** (Food Sales stays full; amount pulled out of the discount total to avoid double-counting) |
 | 4000-02 Beverage Sales       | `beverage_sales`       | `product_mix_data["2. Beverage"].taxable_sales` |
 | 4000-07 Other Sales (only if ≠ 0) | `other_sales`     | Sum of `taxable + untaxable` for `Unknown Class`, `4. Other Sales`, `Extra Items` |
 | 4000-08 Food Delivery Sales  | `delivery_food_sales`  | `product_mix_data["5. Delivery - Food"].taxable + .untaxable` |

@@ -37,6 +37,8 @@ from werkzeug.security import check_password_hash
 
 from revel import fetch_reports, DEFAULT_ESTABLISHMENTS, ESTABLISHMENT_NAMES, R365_NAME_OVERRIDES
 from r365 import open_r365_journal_entry, open_report_viewer
+from reconcile_lock import R365BrowserLock, GlobalBrowserLock, LockBusyError, BrowserLockBusyError, report_viewer_lock
+import log_safety
 import db
 
 load_dotenv()
@@ -337,8 +339,11 @@ def fetch():
             results = fetch_reports(start_date, establishments_list, progress_callback)
             event_queue.put({"type": "done", "results": results})
         except Exception as exc:
-            log.error("fetch_reports error: %s", exc)
-            event_queue.put({"type": "error", "message": str(exc)})
+            # safe_exc(), not str(exc): see log_safety.py — a Revel network
+            # timeout's message can embed the full request (cookies, id_token).
+            safe_msg = log_safety.safe_exc(exc)
+            log.error("fetch_reports error: %s", safe_msg)
+            event_queue.put({"type": "error", "message": safe_msg})
 
     thread = threading.Thread(target=run_fetch, daemon=True)
     thread.start()
@@ -413,15 +418,30 @@ def r365_navigate():
     if r365_name != location_name:
         log.info("R365 name override: '%s' → '%s'", location_name, r365_name)
 
-    import concurrent.futures
-    with _entity_log(location_name, target_date) as log_path:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(open_r365_journal_entry, target_date, r365_name, revel_values, pdf_path)
-            result = future.result(timeout=300)
+    # Same shared-profile lock the reconcile-all loop and the CLI use. If we
+    # can't resolve a specific (establishment, date) pair, still take the
+    # global half so this can never race another browser session.
+    browser_lock = (
+        R365BrowserLock(_est_id, target_date, source="web-navigate")
+        if _est_id is not None and target_date is not None
+        else GlobalBrowserLock(source="web-navigate")
+    )
+    try:
+        with browser_lock:
+            import concurrent.futures
+            with _entity_log(location_name, target_date) as log_path:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    future = ex.submit(open_r365_journal_entry, target_date, r365_name, revel_values, pdf_path)
+                    result = future.result(timeout=300)
+    except (LockBusyError, BrowserLockBusyError) as exc:
+        return jsonify({"error": str(exc)}), 409
 
     result["log_filename"] = log_path.name
     if "error" in result:
         return jsonify(result), 500
+    if not result.get("je_balanced", True):
+        result["diagnosis"] = diagnose_je_imbalance(
+            revel_data, revel_values, result.get("je_difference"))
     return jsonify(result)
 
 
@@ -475,16 +495,24 @@ def r365_report_viewer():
 
     def _run():
         try:
-            result = open_report_viewer(
-                legal_entities, start_date, end_date, show_unapproved, calendar,
-                account=receivable_account,
-                progress_cb=_progress,
-                entity_cb=_entity_done,
-            )
+            # Same shared-profile global lock as JE posting — the report
+            # viewer launches its own launch_persistent_context() against
+            # the identical PROFILE_DIR, so it must never run concurrently
+            # with a JE post (CLI or web) or another report-viewer export.
+            with report_viewer_lock(source="web-report-viewer"):
+                result = open_report_viewer(
+                    legal_entities, start_date, end_date, show_unapproved, calendar,
+                    account=receivable_account,
+                    progress_cb=_progress,
+                    entity_cb=_entity_done,
+                )
             ev_queue.put({"type": "done", **result})
-        except Exception as exc:
-            log.error("report-viewer error: %s", exc)
+        except BrowserLockBusyError as exc:
             ev_queue.put({"type": "error", "message": str(exc)})
+        except Exception as exc:
+            safe_msg = log_safety.safe_exc(exc)
+            log.error("report-viewer error: %s", safe_msg)
+            ev_queue.put({"type": "error", "message": safe_msg})
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -539,8 +567,14 @@ def r365_reconcile_all():
 
             event_queue.put({"type": "r365_progress", "establishment_id": est_id, "status": "running"})
             try:
-                with _entity_log(name, target_date) as log_path:
-                    result = open_r365_journal_entry(target_date, r365_name, revel_values, pdf_path)
+                # Cross-process lock (shared with reconcile_cli.py) so this
+                # web flow and the terminal CLI can never both be mid-browser-
+                # session for the same establishment+date (or at all, since
+                # the global half of R365BrowserLock covers the whole shared
+                # Playwright profile, including the report-viewer export).
+                with R365BrowserLock(est_id, target_date, source="web"):
+                    with _entity_log(name, target_date) as log_path:
+                        result = open_r365_journal_entry(target_date, r365_name, revel_values, pdf_path)
                 if "error" in result:
                     _record_run(est_id, name, target_date, "error",
                                 error=result["error"], log_filename=log_path.name)
@@ -559,12 +593,18 @@ def r365_reconcile_all():
                     # so it is recorded as failed, not success.
                     approved_ok = result.get("approved_ok", je_balanced and approved == "approved")
                     run_status = "success" if approved_ok else "failed"
+                    # When the JE didn't tie, explain why (discount / sales / tax gap)
+                    # so the frontend shows an actionable cause, not just a number.
+                    diagnosis = None
+                    if not je_balanced:
+                        diagnosis = diagnose_je_imbalance(data, revel_values, je_difference)
                     _record_run(est_id, name, target_date, run_status,
                                 je_difference=je_difference,
                                 je_balanced=je_balanced,
                                 attachment_status=result.get("attachment_status", "skipped"),
                                 approved=approved,
-                                log_filename=log_path.name)
+                                log_filename=log_path.name,
+                                diagnosis=diagnosis)
                     event_queue.put({
                         "type": "r365_progress",
                         "establishment_id": est_id,
@@ -578,12 +618,14 @@ def r365_reconcile_all():
                         "je_difference": je_difference,
                         "je_balanced": je_balanced,
                         "approved": approved,
+                        "diagnosis": diagnosis,
                     })
             except Exception as exc:
-                log.error("R365 reconcile error for est %s: %s", est_id, exc)
-                _record_run(est_id, name, target_date, "error", error=str(exc))
+                safe_msg = log_safety.safe_exc(exc)
+                log.error("R365 reconcile error for est %s: %s", est_id, safe_msg)
+                _record_run(est_id, name, target_date, "error", error=safe_msg)
                 event_queue.put({"type": "r365_progress", "establishment_id": est_id,
-                                 "status": "error", "error": str(exc)})
+                                 "status": "error", "error": safe_msg})
 
         event_queue.put({"type": "r365_done"})
 
@@ -658,7 +700,8 @@ def _extract_revel_values(data: dict) -> dict:
     }
     food_row     = class_map.get("1. Food", {})
     food_sales   = round(f(food_row.get("taxable_sales", 0)) + f(food_row.get("untaxable_sales", 0)), 2)
-    beverage_sales = f(class_map.get("2. Beverage", {}).get("taxable_sales", 0))
+    bev_row      = class_map.get("2. Beverage", {})
+    beverage_sales = round(f(bev_row.get("taxable_sales", 0)) + f(bev_row.get("untaxable_sales", 0)), 2)
     del_row      = class_map.get("5. Delivery - Food", {})
     delivery_sales = round(f(del_row.get("taxable_sales", 0)) + f(del_row.get("untaxable_sales", 0)), 2)
     # Other Sales (4000-07) = Revel "Unknown Class" + "4. Other Sales" +
@@ -672,16 +715,31 @@ def _extract_revel_values(data: dict) -> dict:
         for cls in ("Unknown Class", "4. Other Sales", "Extra Items")
     ), 2)
 
-    # ── Untaxed Net Sales (net_sales_untaxed) ─────────────────────────────────
+    # ── Untaxed Net Sales (net_sales_untaxed) — sign-aware ────────────────────
+    # Revel reports the tax-exempt portion of net sales WITH A SIGN, and the sign
+    # decides which side 4000-011 posts on (R365 has no negative cell — we always
+    # type the magnitude and choose the Debit or Credit column):
+    #
+    #   net_sales_untaxed > 0  →  tax-exempt REVENUE.
+    #       4000-011 = CREDIT. Reclassified OUT of 4000-01 Food Sales (subtract),
+    #       so total food revenue is unchanged and the JE stays balanced.
+    #
+    #   net_sales_untaxed < 0  →  tax-exempt REDUCTION (this is the common case).
+    #       4000-011 = DEBIT. Food Sales stays at the FULL class total (Revel's
+    #       headline figure, e.g. 2,576.01 — what the accountant expects to see).
+    #       NOTE: this reduction is part of Revel's gross→net gap, which already
+    #       lives inside `total_discounts` (total_discounts = gross_sales −
+    #       net_sales). To avoid counting it twice, the discount figure must
+    #       exclude |net_sales_untaxed| when 4000-011 is booked as a debit.
     net_sales_untaxed = f(sd.get("net_sales_untaxed", 0))
-    if net_sales_untaxed != 0:
-        tax_exempt_amount = round(abs(net_sales_untaxed), 2)
-        # Reclassify the tax-exempt portion OUT of 4000-01 Food Sales and onto
-        # 4000-011 as its own credit (accountant: "adjust through food sales").
-        # Subtract from food_sales credit so total revenue is unchanged and the
-        # JE stays balanced without an extra debit.
+    if net_sales_untaxed > 0:
+        tax_exempt_amount = round(net_sales_untaxed, 2)
         food_sales        = round(food_sales - tax_exempt_amount, 2)
         tax_exempt_field  = "credit"
+    elif net_sales_untaxed < 0:
+        tax_exempt_amount = round(abs(net_sales_untaxed), 2)
+        # Food Sales left at the full class total; 4000-011 carries the reduction.
+        tax_exempt_field  = "debit"
     else:
         tax_exempt_field  = None
         tax_exempt_amount = 0.0
@@ -843,6 +901,113 @@ def _extract_revel_values(data: dict) -> dict:
         "cash_over_short":      cash_over_short,
         "cash_over_short_sign": cash_over_short_sign,
     }
+
+
+def diagnose_je_imbalance(data: dict, revel_values: dict, je_difference) -> dict | None:
+    """Explain WHY a Journal Entry didn't balance.
+
+    Compares Revel's authoritative P&L (the independent source) against what the
+    tool booked, and matches the gap to the actual imbalance so the frontend can
+    say "it's a discount issue — Revel says 124.41, we booked 140.38 (off 15.97)"
+    instead of a bare "Unbalanced (15.97)".
+
+    Sign convention: je_difference = debit_total - credit_total from the R365 grid
+    (positive = debit-heavy). Sales/tax are credits, discounts are debits, so an
+    over-booked debit (+) and an under-booked credit (+) both push the diff positive.
+
+    Returns a diagnosis dict, or None when the JE is balanced.
+    """
+    try:
+        diff = round(float(je_difference or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    if abs(diff) < 0.01:
+        return None
+
+    sd = (data or {}).get("sales_data") or {}
+
+    def f(v):
+        try:
+            return round(float(v or 0), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Revel authoritative figures (independent P&L)
+    gross_sales     = f(sd.get("gross_sales") or sd.get("total_sales"))
+    total_discounts = f(sd.get("total_discounts") or sd.get("pure_discount_totals"))
+    tax_total = 0.0
+    for row in (data or {}).get("tax_data") or []:
+        if row.get("row_type") == "totals_row":
+            tax_total = f(row.get("tax"))
+            break
+
+    # What the tool booked into the JE
+    sales_booked = round(sum(f(revel_values.get(k)) for k in (
+        "food_sales", "tax_exempt_amount", "beverage_sales",
+        "delivery_food_sales", "other_sales")), 2)
+    discounts_booked = f(revel_values.get("revel_discounts_total"))
+    tax_booked = f(revel_values.get("sales_tax"))
+
+    # Each candidate's `effect` = its signed contribution to (debit - credit).
+    candidates = [
+        {
+            "category": "discount",
+            "headline": "Discount total doesn't match Revel",
+            "revel_label": "Revel discounts (P&L)",
+            "revel_value": total_discounts,
+            "booked_label": "Booked to discount accounts",
+            "booked_value": discounts_booked,
+            "effect": round(discounts_booked - total_discounts, 2),
+            "detail": ("Discounts are debits. The tool sources them from Revel's "
+                       "discounts-by-reason list, which can exceed the P&L discount "
+                       "total when it includes items that aren't true revenue "
+                       "discounts (e.g. gift-card redemptions or manager comps)."),
+        },
+        {
+            "category": "sales",
+            "headline": "Sales revenue doesn't match Revel",
+            "revel_label": "Revel gross sales",
+            "revel_value": gross_sales,
+            "booked_label": "Booked to sales accounts",
+            "booked_value": sales_booked,
+            "effect": round(gross_sales - sales_booked, 2),
+            "detail": ("Sales are credits. Booked revenue (Food + Beverage + "
+                       "Delivery + Other, including any tax-exempt split) should "
+                       "equal Revel gross sales."),
+        },
+        {
+            "category": "tax",
+            "headline": "Sales tax doesn't match Revel",
+            "revel_label": "Revel sales tax",
+            "revel_value": tax_total,
+            "booked_label": "Booked sales tax",
+            "booked_value": tax_booked,
+            "effect": round(tax_total - tax_booked, 2),
+            "detail": ("Sales tax is a credit (liability). Booked tax should equal "
+                       "Revel's tax total."),
+        },
+    ]
+
+    # The cause whose effect best explains the actual imbalance.
+    best = min(candidates, key=lambda c: abs(c["effect"] - diff))
+    explained = abs(best["effect"] - diff) < 0.02 and abs(best["effect"]) > 0.01
+
+    result = {
+        "difference": diff,
+        "direction": "debit-heavy" if diff > 0 else "credit-heavy",
+        "explained": explained,
+    }
+    if explained:
+        for k in ("category", "headline", "revel_label", "revel_value",
+                  "booked_label", "booked_value", "detail"):
+            result[k] = best[k]
+        result["gap"] = round(best["booked_value"] - best["revel_value"], 2)
+    else:
+        result["category"] = "unexplained"
+        result["headline"] = "Unbalanced — cause not auto-identified"
+        result["detail"] = ("The imbalance doesn't match a single sales, discount, "
+                            "or tax gap. Review the JE grid in the log.")
+    return result
 
 
 def _summarise(data) -> dict | None:

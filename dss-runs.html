@@ -58,6 +58,10 @@
 
     .mono { font-variant-numeric:tabular-nums; }
     .err-text { color:var(--red); font-size:0.8rem; max-width:340px; word-break:break-word; }
+    .diag { margin-top:4px; padding:6px 8px; border-left:3px solid var(--red);
+            background:rgba(200,60,60,0.07); border-radius:4px; font-size:0.78rem;
+            line-height:1.4; max-width:360px; color:var(--text); cursor:help; }
+    .diag strong { font-weight:600; }
     .log-link { color:var(--indigo); font-weight:600; text-decoration:none; font-size:0.8rem; }
     .log-link:hover { text-decoration:underline; }
     .muted { color:var(--muted); }
@@ -231,7 +235,7 @@
       const details = ok
         ? `<span class="muted">Posted</span>`
         : isUnbalanced
-          ? `<span class="err-text">Unbalanced (${diff})</span>`
+          ? `<span class="err-text">Unbalanced (${diff})</span>${renderDiagnosis(r.diagnosis)}`
           : `<span class="err-text">${esc(r.error || "Error")}</span>`;
       const logCell = r.log_filename
         ? `<a class="log-link" href="/logs/${esc(r.log_filename)}" target="_blank">View</a>`
@@ -247,6 +251,29 @@
         <td>${logCell}</td>
       </tr>`;
     }).join("");
+  }
+
+  // Turn the stored diagnosis JSON into a readable cause line, e.g.
+  // "Discount issue — Revel: 124.41 · Booked: 140.38 · off by +15.97"
+  function renderDiagnosis(raw) {
+    if (!raw) return "";
+    let d;
+    try { d = (typeof raw === "string") ? JSON.parse(raw) : raw; }
+    catch (e) { return ""; }
+    if (!d || !d.headline) return "";
+    const fmt = n => (n == null ? "—" : Number(n).toFixed(2));
+    let line;
+    if (d.explained) {
+      const gap = (d.gap >= 0 ? "+" : "") + fmt(d.gap);
+      line = `<strong>${esc(d.headline)}</strong>`
+           + `<br>${esc(d.revel_label)}: <span class="mono">${fmt(d.revel_value)}</span>`
+           + ` · ${esc(d.booked_label)}: <span class="mono">${fmt(d.booked_value)}</span>`
+           + ` · off by <span class="mono">${gap}</span>`;
+    } else {
+      line = `<strong>${esc(d.headline)}</strong>`;
+    }
+    const tip = d.detail ? ` title="${esc(d.detail)}"` : "";
+    return `<div class="diag"${tip}>${line}</div>`;
   }
 
   function renderSummary(j) {

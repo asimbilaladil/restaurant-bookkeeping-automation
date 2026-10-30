@@ -694,6 +694,7 @@ def fill_journal_entry(
     attachment_screenshot_path: str | None = None,
     location_name: str | None = None,
     target_date: date | None = None,
+    update_only: bool = False,
 ) -> tuple[float, str, str]:
     """
     Fill R365 Journal Entry from Revel data.
@@ -791,45 +792,72 @@ def fill_journal_entry(
         wrong_val    = _read_je_cell_value(je_frame, "4000-011", wrong_field, api_lines=api_lines)
         right_val    = _read_je_cell_value(je_frame, "4000-011", heal_field, api_lines=api_lines)
         if wrong_val or (right_val and right_val != heal_amount):
-            log.warning(
-                "Stale 4000-011 row (%s=%.2f present, want %s=%.2f) — recreating JE to reset",
-                wrong_field, wrong_val, heal_field, heal_amount,
-            )
-            _recreate_journal_entry(active)
-            # Switch back to the Journal Entry tab and re-detect the grid frame.
-            for f in list(active.frames) + [active]:
+            if update_only:
+                # "Recreate Journal Entry" resets the JE to R365's native
+                # generation, which (per Phase 4.1 investigation) very likely
+                # also strips any existing attachment — unacceptable in a mode
+                # whose entire contract is "never touch the attachment or
+                # approval state". Leave the stale row as-is and surface it
+                # loudly instead; a full (non-update-only) run, or a manual
+                # fix in R365, is required to self-heal this case.
+                log.warning(
+                    "update_only=True — stale 4000-011 row (%s=%.2f present, want "
+                    "%s=%.2f) would normally trigger a JE recreate, which is unsafe "
+                    "in update-only mode (risks the existing attachment). Skipping "
+                    "this self-heal; the 4000-011 row will remain stale.",
+                    wrong_field, wrong_val, heal_field, heal_amount,
+                )
+            else:
+                log.warning(
+                    "Stale 4000-011 row (%s=%.2f present, want %s=%.2f) — recreating JE to reset",
+                    wrong_field, wrong_val, heal_field, heal_amount,
+                )
+                _recreate_journal_entry(active)
+                # Switch back to the Journal Entry tab and re-detect the grid
+                # frame -- only needed when a recreate actually happened.
+                for f in list(active.frames) + [active]:
+                    try:
+                        je_tab = f.locator('li[role="tab"] span.k-link', has_text="Journal Entry").first
+                        if je_tab.count() > 0:
+                            je_tab.scroll_into_view_if_needed()
+                            je_tab.click()
+                            active.wait_for_timeout(4_000)
+                            break
+                    except Exception:
+                        continue
+                for f in active.frames:
+                    try:
+                        if f.locator('td:has-text("Food Delivery Sales")').count() > 0:
+                            je_frame = f
+                            break
+                    except Exception:
+                        continue
                 try:
-                    je_tab = f.locator('li[role="tab"] span.k-link', has_text="Journal Entry").first
-                    if je_tab.count() > 0:
-                        je_tab.scroll_into_view_if_needed()
-                        je_tab.click()
-                        active.wait_for_timeout(4_000)
-                        break
-                except Exception:
-                    continue
-            for f in active.frames:
-                try:
-                    if f.locator('td:has-text("Food Delivery Sales")').count() > 0:
-                        je_frame = f
-                        break
-                except Exception:
-                    continue
-            try:
-                je_frame.locator('tr[role="row"]').first.wait_for(state="attached", timeout=15_000)
-                log.info("JE grid re-detected after stale-row recreate")
-            except Exception as e:
-                log.warning("JE grid not re-detected after stale-row recreate: %s", e)
+                    je_frame.locator('tr[role="row"]').first.wait_for(state="attached", timeout=15_000)
+                    log.info("JE grid re-detected after stale-row recreate")
+                except Exception as e:
+                    log.warning("JE grid not re-detected after stale-row recreate: %s", e)
 
     # ── Auto-assign unassigned payment-type items (rows showing '-') ──────────
     # A '-' account row is an unmapped item (e.g. a coupon/comp) that unbalances
     # the JE. R365 remembers the mapping, so ticking it + Update reassigns it.
     # Done before filling so the recreated JE is mapped and can balance — this
     # makes both the cron run and the manual rerun self-heal.
-    try:
-        assigned = _assign_missing_payment_types(active, je_frame)
-    except Exception as e:
+    #
+    # Skipped entirely in update_only mode: it writes a payment-type mapping
+    # on a separate page AND always leads to _recreate_journal_entry() below,
+    # which (per Phase 4.1 investigation) resets the JE to R365's native
+    # generation and very likely strips any existing attachment — outside
+    # update-only's "accounting rows only, never touch attachment/approval"
+    # contract.
+    if update_only:
         assigned = []
-        log.warning("Payment-type auto-assign step failed: %s", e)
+    else:
+        try:
+            assigned = _assign_missing_payment_types(active, je_frame)
+        except Exception as e:
+            assigned = []
+            log.warning("Payment-type auto-assign step failed: %s", e)
     if assigned:
         log.info("Auto-assigned %d payment type(s): %s — recreating JE", len(assigned), assigned)
         _recreate_journal_entry(active)
@@ -1183,8 +1211,15 @@ def fill_journal_entry(
 
     # Upload Revel xlsx attachment before saving (so it persists with the JE) —
     # but only when balanced; an unbalanced entry should not get the file.
+    # update_only=True skips this unconditionally, regardless of attachment_path
+    # or balance state — a controlled "just fix the numbers" run must never
+    # touch attachments (Phase 4 requirement).
     attachment_status = "skipped"
-    if attachment_path and je_balanced:
+    if update_only:
+        attachment_status = "skipped_update_only"
+        if attachment_path:
+            log.info("update_only=True — skipping attachment upload (would have uploaded %s)", attachment_path)
+    elif attachment_path and je_balanced:
         try:
             attachment_status = _upload_attachment(
                 active, attachment_path,
@@ -1227,7 +1262,14 @@ def fill_journal_entry(
     # <li data-testid="approveMenuItem"> with an ng-click handler, same pattern
     # as saveMenuItem (clicking the <li> fires the handler without opening the
     # dropdown). "balanced" matches the downstream definition: round(diff,2)==0.
-    if je_balanced:
+    # update_only=True skips this unconditionally, even if balanced — a
+    # controlled "just fix the numbers" run must never approve (Phase 4
+    # requirement); the row updates are saved above, nothing more happens.
+    if update_only:
+        approved = "skipped_update_only"
+        log.info("update_only=True — skipping Approve (JE balanced=%s, diff=%.2f)",
+                 je_balanced, je_diff or 0.0)
+    elif je_balanced:
         try:
             # After Save, R365 re-renders the toolbar — the approveMenuItem <li>
             # is briefly absent from the DOM, so a fixed sleep + immediate click
@@ -1276,6 +1318,61 @@ def fill_journal_entry(
 
 # ─── Navigation ───────────────────────────────────────────────────────────────
 
+# R365 occasionally shows a Pendo onboarding-tour overlay (a full-page
+# backdrop injected as `#pendo-base` / `.pendo-backdrop-region-*`, e.g.
+# "pendo-backdrop-3" in the Playwright error this guards against) that sits
+# on top of the real page and intercepts pointer events, blocking a normal
+# (non-forced) click on elements beneath it such as the DSS date filter.
+_PENDO_OVERLAY_SELECTOR = "#pendo-base, [id^='pendo-backdrop'], ._pendo-backdrop"
+# Pendo's own dismissal control for a guide/overlay. Tried in order; the
+# first one that's actually visible is clicked normally (no force=True).
+_PENDO_CLOSE_SELECTORS = [
+    "#pendo-base button[aria-label='Close Guide']",
+    "#pendo-base button[aria-label='Close']",
+    "#pendo-base ._pendo-close-guide",
+    "#pendo-base .pendo-close-guide",
+    "#pendo-base [id^='pendo-close-guide']",
+    "#pendo-base button.pendo-icon-cross",
+    "#pendo-base [class*='pendo-icon-cross']",
+]
+
+
+def _dismiss_pendo_overlay_if_present(page: Page, visibility_timeout: int = 2_000) -> None:
+    """No-op unless a Pendo onboarding overlay is actually visible. When one
+    is, dismiss it via Pendo's own close control (a real Playwright click,
+    with normal actionability checks -- never force=True). If the overlay is
+    visible but no known close control can be found/clicked, raise rather
+    than silently forcing a click through it, so the caller fails loudly.
+    """
+    overlay = page.locator(_PENDO_OVERLAY_SELECTOR).first
+    try:
+        overlay_visible = overlay.is_visible(timeout=visibility_timeout)
+    except Exception:
+        overlay_visible = False
+    if not overlay_visible:
+        return
+
+    log.info("Pendo onboarding overlay detected — attempting to dismiss via its close control")
+    for selector in _PENDO_CLOSE_SELECTORS:
+        close_btn = page.locator(selector).first
+        try:
+            if not close_btn.is_visible(timeout=500):
+                continue
+            close_btn.click(timeout=2_000)
+        except Exception:
+            continue
+        else:
+            page.wait_for_timeout(500)
+            log.info("Dismissed Pendo overlay via selector: %s", selector)
+            return
+
+    raise RuntimeError(
+        "Pendo onboarding overlay is visible but no known close control could be "
+        "found/clicked — refusing to force-click through it. Dismiss it manually "
+        "in R365, or add its close selector to _PENDO_CLOSE_SELECTORS."
+    )
+
+
 def go_to_daily_sales_summary(
     page: Page,
     target_date: date | None = None,
@@ -1286,6 +1383,7 @@ def go_to_daily_sales_summary(
     before_screenshot_path: str = "/tmp/r365_je_before.png",
     attachment_path: str | None = None,
     attachment_screenshot_path: str | None = None,
+    update_only: bool = False,
 ) -> tuple[float, str, str]:
     log.info("Navigating directly to Daily Sales Summary...")
     je_diff = 0.0
@@ -1316,6 +1414,8 @@ def go_to_daily_sales_summary(
     if target_date:
         date_str = target_date.strftime("%-m/%-d/%Y")
         log.info("Setting date filter to: %s", date_str)
+
+        _dismiss_pendo_overlay_if_present(page)
 
         date_filter = dss_frame.locator('input[type="text"]').nth(4)
         date_filter.click(click_count=3)
@@ -1383,6 +1483,7 @@ def go_to_daily_sales_summary(
                             attachment_screenshot_path=attachment_screenshot_path,
                             location_name=location_name,
                             target_date=target_date,
+                            update_only=update_only,
                         )
                         je_diff = je_diff or 0.0
 
@@ -1411,11 +1512,18 @@ def open_r365_journal_entry(
     location_name: str | None = None,
     revel_values: dict | None = None,
     attachment_path: str | None = None,
+    update_only: bool = False,
 ) -> dict:
     """
     Launch a headless browser using a persistent profile (so login is remembered),
     navigate to the DSS entity for the given date/location, open Journal Entry,
     and fill in values from Revel.
+
+    update_only: when True, fills/saves the accounting rows exactly as normal
+    but NEVER uploads an attachment and NEVER clicks Approve, regardless of
+    whether an attachment_path was given or the JE balances. Intended for a
+    controlled, auditable "just fix the numbers" run against an existing
+    Unapproved JE — see reconcile_cli.py's `run --update-only`.
     """
     if not R365_USER or not R365_PASS:
         return {"error": "R65_USER and R65_PASS must be set in .env"}
@@ -1458,6 +1566,7 @@ def open_r365_journal_entry(
                 before_screenshot_path=f"/tmp/{before_filename}",
                 attachment_path=attachment_path,
                 attachment_screenshot_path=f"/tmp/{attachment_filename}",
+                update_only=update_only,
             )
 
             active_pages = context.pages

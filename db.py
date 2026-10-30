@@ -9,6 +9,7 @@ appends another record, so the full history (fail → success) is preserved and
 visible on the DSS Runs page.
 """
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -45,14 +46,17 @@ def init_db() -> None:
                 attachment_status   TEXT,
                 approved            TEXT,         -- 'approved' | 'failed' | 'skipped'
                 log_filename        TEXT,
+                diagnosis           TEXT,         -- JSON: why an unbalanced JE didn't tie
                 created_at          TEXT          -- UTC timestamp of when this run executed
             )
             """
         )
-        # Migration: add `approved` to tables created before this column existed.
+        # Migrations: add columns to tables created before they existed.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(dss_runs)")}
         if "approved" not in existing:
             conn.execute("ALTER TABLE dss_runs ADD COLUMN approved TEXT")
+        if "diagnosis" not in existing:
+            conn.execute("ALTER TABLE dss_runs ADD COLUMN diagnosis TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dss_runs_run_date ON dss_runs (run_date)"
         )
@@ -73,17 +77,23 @@ def record_run(
     attachment_status=None,
     approved=None,
     log_filename=None,
+    diagnosis=None,
 ) -> int:
-    """Insert a new run record and return its row id."""
+    """Insert a new run record and return its row id.
+
+    `diagnosis` is an optional dict explaining why an unbalanced JE didn't tie;
+    it is stored as a JSON string.
+    """
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    diagnosis_json = json.dumps(diagnosis) if diagnosis else None
     with _lock, _connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO dss_runs (
                 establishment_id, establishment_name, run_date, status, error,
                 je_difference, je_balanced, attachment_status, approved,
-                log_filename, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                log_filename, diagnosis, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 establishment_id,
@@ -96,6 +106,7 @@ def record_run(
                 attachment_status,
                 approved,
                 log_filename,
+                diagnosis_json,
                 created_at,
             ),
         )
